@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------------
+    // Admin = signed-in user whose admins/{uid} doc has active == true.
+    // Create admins/{uid} docs manually from the Firebase console.
+    // ------------------------------------------------------------------
+    function isAdmin() {
+      return request.auth != null
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true;
+    }
+
+    function isString(v, maxLen) {
+      return v is string && v.size() <= maxLen;
+    }
+
+    function validRatings() {
+      let r = request.resource.data.ratings;
+      return r != null
+        && r.overall in ['poor', 'okay', 'good', 'great', 'excellent']
+        && r.taste in ['poor', 'okay', 'good', 'great', 'excellent']
+        && r.packaging in ['poor', 'okay', 'good', 'great', 'excellent']
+        && r.quantity in ['less', 'okay', 'perfect', 'more'];
+    }
+
+    // Public customers may ONLY create new pending submissions with a
+    // restricted shape — they can never read, list, or modify submissions,
+    // and can never write admin fields.
+    function validSubmission() {
+      let d = request.resource.data;
+      return d.keys().hasAll([
+            'submissionId', 'campaignId', 'createdAtMillis', 'updatedAtMillis',
+            'ratings', 'improvementFeedback', 'generatedReview', 'editedReview',
+            'suggestedStars', 'reviewScreenshotUrl', 'screenshotHash',
+            'verification', 'cashback', 'status', 'duplicateFlags', 'meta'
+          ])
+        && d.keys().hasOnly([
+            'submissionId', 'campaignId', 'createdAtMillis', 'updatedAtMillis',
+            'ratings', 'improvementFeedback', 'generatedReview', 'editedReview',
+            'suggestedStars', 'reviewScreenshotUrl', 'screenshotHash',
+            'verification', 'cashback', 'status', 'duplicateFlags', 'meta'
+          ])
+        && d.submissionId == request.path[4]
+        && isString(d.campaignId, 60)
+        && validRatings()
+        && isString(d.improvementFeedback, 800)
+        && isString(d.generatedReview, 2000)
+        && isString(d.editedReview, 2000)
+        && isString(d.reviewScreenshotUrl, 400)
+        && isString(d.screenshotHash, 40)
+        && d.verification.keys().hasOnly(['method', 'orderId', 'customerOrderName'])
+        && d.verification.method in ['orderId', 'name']
+        && isString(d.verification.orderId, 80)
+        && isString(d.verification.customerOrderName, 120)
+        && d.cashback.keys().hasOnly(['method', 'upiId', 'upiQrImageUrl'])
+        && d.cashback.method in ['upi', 'qr']
+        && isString(d.cashback.upiId, 120)
+        && isString(d.cashback.upiQrImageUrl, 400)
+        && d.status == 'pending'
+        && d.duplicateFlags is list
+        && d.duplicateFlags.size() <= 10;
+    }
+
+    match /feedbackSubmissions/{submissionId} {
+      allow create: if request.auth == null && validSubmission();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Monotonic reference counter: public can only increment by exactly 1.
+    // Seed it once from the console: counters/reference = { value: 0 }
+    match /counters/{counter} {
+      allow create: if false;
+      allow update: if request.auth == null
+        && counter == 'reference'
+        && request.resource.data.keys().hasOnly(['value'])
+        && request.resource.data.value == resource.data.value + 1;
+      allow read: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Admin whitelist — managed from the Firebase console (no writes via SDK).
+    match /admins/{userId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Campaign settings.
+    match /settings/{doc} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}
