@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { ImageCell, StatCard } from '../../components/admin'
 import { StatusPill } from '../../components/ui'
+import { ADMIN_ROUTE } from '../../lib/adminRoute'
 import { dupeFlagLabel } from '../../lib/dupe'
 import { formatDateTime, money, timeAgo } from '../../lib/format'
 import { ratingValue } from '../../lib/ratings'
@@ -224,7 +225,7 @@ export default function Dashboard({ submissions, onRefresh, cashbackAmount = 15 
                 return (
                   <tr key={s.submissionId} className="group border-b border-cocoa-50 transition hover:bg-brand-50/40">
                     <td className="px-4 py-3">
-                      <a href={`#/submission/${s.submissionId}`} className="font-mono text-xs font-extrabold text-brand-600 underline-offset-2 hover:underline">
+                      <a href={`#${ADMIN_ROUTE}/submission/${s.submissionId}`} className="font-mono text-xs font-extrabold text-brand-600 underline-offset-2 hover:underline">
                         {s.reference}
                       </a>
                       {s.duplicateFlags?.length > 0 && (

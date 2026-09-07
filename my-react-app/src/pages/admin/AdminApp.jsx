@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AnimatePresence } from 'framer-motion'
 import { BarChart3, LayoutDashboard, LogOut, Settings as SettingsIcon } from 'lucide-react'
 import Login from './Login'
@@ -7,6 +7,7 @@ import Dashboard from './Dashboard'
 import Detail from './Detail'
 import Analytics from './Analytics'
 import Settings from './Settings'
+import { ADMIN_ROUTE } from '../../lib/adminRoute'
 import {
   IS_DEMO,
   fetchSettings,
@@ -28,6 +29,9 @@ function AdminShell({ user, onLogout, children }) {
     { to: '/analytics', label: 'Analytics', icon: <BarChart3 size={17} /> },
     { to: '/settings', label: 'Settings', icon: <SettingsIcon size={17} /> },
   ]
+  // Path relative to the admin route prefix.
+  const relPath = (location.pathname || '/').replace(ADMIN_ROUTE, '') || '/'
+  const isActive = (to) => (to === '/' ? relPath === '/' : relPath.startsWith(to))
   return (
     <div className="flex min-h-screen bg-[#F7F3EE]">
       {/* Sidebar (desktop) */}
@@ -41,11 +45,11 @@ function AdminShell({ user, onLogout, children }) {
         </div>
         <nav className="mt-2 flex-1 space-y-1 px-3">
           {nav.map((n) => {
-            const active = location.pathname === n.to || (n.to === '/' && location.pathname.startsWith('/submission'))
+            const active = isActive(n.to)
             return (
               <a
                 key={n.to}
-                href={`#${n.to}`}
+                href={`#${ADMIN_ROUTE}${n.to}`}
                 className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-bold transition ${
                   active ? 'bg-brand-50 text-brand-600' : 'text-cocoa-500 hover:bg-cream-100 hover:text-cocoa-800'
                 }`}
@@ -81,7 +85,7 @@ function AdminShell({ user, onLogout, children }) {
               <p className="text-sm font-extrabold text-cocoa-900">Admin Portal</p>
             </div>
             <p className="hidden text-sm font-bold text-cocoa-500 lg:block">
-              {nav.find((n) => location.pathname === n.to || (n.to === '/' && location.pathname.startsWith('/submission')))?.label || 'Dashboard'}
+              {nav.find((n) => isActive(n.to))?.label || 'Dashboard'}
             </p>
             {IS_DEMO && (
               <span className="rounded-full bg-gold-100 px-3 py-1 text-[11px] font-black text-gold-700">DEMO MODE · LOCAL DATA</span>
@@ -93,11 +97,11 @@ function AdminShell({ user, onLogout, children }) {
           {/* Mobile nav */}
           <nav className="flex gap-2 overflow-x-auto px-4 pb-2 no-scrollbar lg:hidden">
             {nav.map((n) => {
-              const active = location.pathname === n.to || (n.to === '/' && location.pathname.startsWith('/submission'))
+              const active = isActive(n.to)
               return (
                 <a
                   key={n.to}
-                  href={`#${n.to}`}
+                  href={`#${ADMIN_ROUTE}${n.to}`}
                   className={`flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition ${
                     active ? 'bg-brand-500 text-white' : 'bg-cream-100 text-cocoa-600'
                   }`}
@@ -190,40 +194,35 @@ export default function AdminApp() {
   }
 
   return (
-    <HashRouter>
-      <AdminShell user={user} onLogout={handleLogout}>
-        {error && (
-          <div className="mb-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
-            {error}
-            <button onClick={refresh} className="ml-3 underline underline-offset-2">Retry</button>
-          </div>
-        )}
-        <AnimatePresence mode="wait">
-          <Routes>
-            <Route
-              path="/"
-              element={<Dashboard submissions={subs} onRefresh={refresh} cashbackAmount={settings?.cashbackAmount || 15} />}
-            />
-            <Route
-              path="/submission/:id"
-              element={
-                <Detail
-                  submissions={subs}
-                  onStatus={handleStatus}
-                  onNotes={handleNotes}
-                  cashbackAmount={settings?.cashbackAmount || 15}
-                />
-              }
-            />
-            <Route path="/analytics" element={<Analytics submissions={subs} />} />
-            <Route
-              path="/settings"
-              element={<Settings settings={settings} onSave={handleSaveSettings} />}
-            />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </AnimatePresence>
-      </AdminShell>
-    </HashRouter>
+    <AdminShell user={user} onLogout={handleLogout}>
+      {error && (
+        <div className="mb-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          {error}
+          <button onClick={refresh} className="ml-3 underline underline-offset-2">Retry</button>
+        </div>
+      )}
+      <AnimatePresence mode="wait">
+        <Routes>
+          <Route
+            index
+            element={<Dashboard submissions={subs} onRefresh={refresh} cashbackAmount={settings?.cashbackAmount || 15} />}
+          />
+          <Route
+            path="submission/:id"
+            element={
+              <Detail
+                submissions={subs}
+                onStatus={handleStatus}
+                onNotes={handleNotes}
+                cashbackAmount={settings?.cashbackAmount || 15}
+              />
+            }
+          />
+          <Route path="analytics" element={<Analytics submissions={subs} />} />
+          <Route path="settings" element={<Settings settings={settings} onSave={handleSaveSettings} />} />
+          <Route path="*" element={<Navigate to=".." replace />} />
+        </Routes>
+      </AnimatePresence>
+    </AdminShell>
   )
 }

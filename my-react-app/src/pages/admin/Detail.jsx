@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { ImageCell, LightboxArea } from '../../components/admin'
 import { Spinner, StatusPill } from '../../components/ui'
+import { ADMIN_ROUTE } from '../../lib/adminRoute'
 import { dupeFlagLabel } from '../../lib/dupe'
 import { formatDate, formatDateTime, money } from '../../lib/format'
 import { ratingValue } from '../../lib/ratings'
@@ -74,7 +75,7 @@ export default function Detail({ submissions, onStatus, onNotes, cashbackAmount 
       <div className="flex flex-col items-center gap-3 py-20 text-center">
         <p className="text-3xl">🔎</p>
         <p className="text-sm font-bold text-cocoa-500">Submission not found</p>
-        <a href="#/" className="text-sm font-bold text-brand-600 underline underline-offset-2">Back to dashboard</a>
+        <a href={`#${ADMIN_ROUTE}`} className="text-sm font-bold text-brand-600 underline underline-offset-2">Back to dashboard</a>
       </div>
     )
   }
@@ -96,7 +97,7 @@ export default function Detail({ submissions, onStatus, onNotes, cashbackAmount 
   return (
     <LightboxArea src={lightbox} onClose={() => setLightbox(null)}>
       <div className="mx-auto max-w-6xl">
-        <button onClick={() => navigate('/')} className="flex items-center gap-2 rounded-xl px-2 py-1.5 text-sm font-bold text-cocoa-500 transition hover:text-brand-600">
+        <button onClick={() => navigate('..')} className="flex items-center gap-2 rounded-xl px-2 py-1.5 text-sm font-bold text-cocoa-500 transition hover:text-brand-600">
           <ArrowLeft size={16} /> Back to dashboard
         </button>
 
@@ -252,7 +253,7 @@ export default function Detail({ submissions, onStatus, onNotes, cashbackAmount 
                     <li key={i} className="rounded-2xl bg-white/80 px-3.5 py-2.5 text-xs font-semibold text-cocoa-700">
                       {d.label}
                       {d.match && (
-                        <a href={`#/submission/${d.match.submissionId}`} className="ml-2 font-mono font-extrabold text-gold-700 underline underline-offset-2">
+                        <a href={`#${ADMIN_ROUTE}/submission/${d.match.submissionId}`} className="ml-2 font-mono font-extrabold text-gold-700 underline underline-offset-2">
                           {d.match.reference}
                         </a>
                       )}
