@@ -13,8 +13,22 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "mahalaxmi.db"
 UPLOADS_DIR = BASE_DIR / "uploads"
 
-DEFAULT_ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "team.duobits@gmail.com").strip().lower()
-DEFAULT_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "aditya9922")
+# In production (APP_ENV=production) the admin credentials must come from the
+# environment — no hard-coded fallbacks. Local development keeps the
+# documented defaults so `uvicorn main:app` just works out of the box.
+APP_ENV = os.getenv("APP_ENV", "").strip().lower()
+
+if APP_ENV == "production":
+    DEFAULT_ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "").strip().lower()
+    DEFAULT_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+    if not DEFAULT_ADMIN_EMAIL or not DEFAULT_ADMIN_PASSWORD:
+        raise RuntimeError(
+            "ADMIN_EMAIL and ADMIN_PASSWORD must be set as environment variables "
+            "when APP_ENV=production. Hard-coded default credentials are disabled in production."
+        )
+else:
+    DEFAULT_ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "team.duobits@gmail.com").strip().lower()
+    DEFAULT_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "aditya9922")
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 

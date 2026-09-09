@@ -28,8 +28,9 @@ function loadGoogleScript() {
 }
 
 export default function Login({ defaultEmail, onLogin, onGoogleLogin, error }) {
+  // Never pre-fill the password — the default is documented, not baked into UI.
   const [email, setEmail] = useState(defaultEmail || 'team.duobits@gmail.com')
-  const [password, setPassword] = useState('aditya9922')
+  const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [googleError, setGoogleError] = useState('')
   const [googleReady, setGoogleReady] = useState(false)
