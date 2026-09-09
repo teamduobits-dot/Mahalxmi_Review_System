@@ -104,9 +104,27 @@ html {
   scroll-behavior: smooth;
 }
 
+html, body, #root {
+  min-height: 100%;
+}
+
 body {
   @apply bg-cream-100 text-cocoa-900 font-sans antialiased;
   overscroll-behavior-y: none;
+  overflow-x: hidden;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-overflow-scrolling: touch;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+img, svg {
+  backface-visibility: hidden;
+  transform: translateZ(0);
 }
 
 /* Hide scrollbars but keep scroll (mobile nav rows) */

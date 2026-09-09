@@ -1,0 +1,6 @@
+backend/.env
+backend/mahalaxmi.db
+backend/uploads/
+.venv/
+__pycache__/
+*.pyc

@@ -1,156 +1,148 @@
 import { useState } from 'react'
-import { motion } from 'framer-motion'
-import { IndianRupee, MessageSquareText, Rocket, Save, ShieldCheck, Timer } from 'lucide-react'
-import { Spinner } from '../../components/ui'
-import { DEFAULT_SETTINGS } from '../../lib/firebase'
+import { IndianRupee, Lock, Save, Store } from 'lucide-react'
+import { ErrorBox, SectionCard, Spinner } from '../../components/ui'
+import { api } from '../../lib/api'
 
-function Field({ label, hint, children }) {
-  return (
-    <div>
-      <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">{label}</label>
-      <div className="mt-1.5">{children}</div>
-      {hint && <p className="mt-1.5 text-[11px] font-medium text-cocoa-300">{hint}</p>}
-    </div>
-  )
-}
-
-export default function Settings({ settings, onSave }) {
-  const [form, setForm] = useState(null)
+export default function Settings({ settings, onSaved }) {
+  const [form, setForm] = useState(settings)
   const [prevSettings, setPrevSettings] = useState(settings)
+  const [password, setPassword] = useState({ current: '', next: '', confirm: '' })
   const [busy, setBusy] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
 
-  // Derive the editable form from settings whenever settings change
-  // (React's recommended "adjust state during render" pattern).
-  if (settings && prevSettings !== settings) {
+  if (settings && settings !== prevSettings) {
     setPrevSettings(settings)
-    setForm({ ...DEFAULT_SETTINGS, ...settings })
+    setForm(settings)
   }
 
   if (!form) {
     return (
       <div className="flex justify-center py-20">
-        <Spinner className="text-brand-500" size={24} />
+        <Spinner size={24} className="text-brand-500" />
       </div>
     )
   }
 
-  const set = (patch) => setForm((f) => ({ ...f, ...patch }))
+  const setField = (patch) => setForm((current) => ({ ...current, ...patch }))
 
-  const save = async () => {
+  const saveSettings = async () => {
     setBusy(true)
-    await onSave(form)
-    setBusy(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setError('')
+    setMessage('')
+    try {
+      const updated = await api.saveAdminSettings(form)
+      onSaved?.(updated)
+      setMessage('Settings saved successfully.')
+    } catch (saveError) {
+      setError(saveError.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
-  const inputCls =
-    'w-full rounded-2xl border-2 border-cocoa-100 bg-white px-4 py-3 text-sm font-semibold text-cocoa-900 outline-none transition focus:border-brand-400 focus:ring-4 focus:ring-brand-100'
+  const changePassword = async () => {
+    setError('')
+    setMessage('')
+    if (!password.current || !password.next || !password.confirm) {
+      setError('Please fill all password fields.')
+      return
+    }
+    if (password.next !== password.confirm) {
+      setError('New password and confirm password do not match.')
+      return
+    }
+    setBusy(true)
+    try {
+      await api.changePassword(password.current, password.next)
+      setPassword({ current: '', next: '', confirm: '' })
+      setMessage('Admin password updated successfully.')
+    } catch (changeError) {
+      setError(changeError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const inputClass = 'mt-1.5 w-full rounded-2xl border-2 border-cocoa-100 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition focus:border-brand-400 focus:ring-4 focus:ring-brand-100'
 
   return (
-    <div className="mx-auto max-w-3xl">
-      <h1 className="font-display text-2xl font-extrabold tracking-tight text-cocoa-900">Campaign Settings</h1>
-      <p className="text-sm font-medium text-cocoa-400">Control the cashback campaign and customer-facing copy</p>
+    <div className="mx-auto max-w-4xl space-y-5">
+      <div>
+        <h1 className="font-display text-2xl font-extrabold tracking-tight text-cocoa-900">Admin settings</h1>
+        <p className="text-sm font-medium text-cocoa-400">Manage cashback form copy and your admin password</p>
+      </div>
 
-      <div className="mt-5 space-y-4">
-        {/* Cashback */}
-        <motion.section initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} className="rounded-3xl border border-cocoa-100 bg-white p-6 shadow-soft">
-          <h2 className="flex items-center gap-2 font-display text-base font-extrabold text-cocoa-900">
-            <IndianRupee size={16} className="text-gold-600" /> Cashback Amount
-          </h2>
-          <div className="mt-4 max-w-[220px]">
-            <Field label="Amount (₹)" hint="The reward customers receive after verification.">
-              <div className="relative">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-black text-cocoa-400">₹</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={form.cashbackAmount}
-                  onChange={(e) => set({ cashbackAmount: Math.max(1, Number(e.target.value) || 1) })}
-                  className={`${inputCls} pl-9`}
-                />
-              </div>
-            </Field>
+      <SectionCard>
+        <div className="flex items-center gap-2">
+          <Store size={18} className="text-brand-600" />
+          <h2 className="font-display text-lg font-extrabold text-cocoa-900">Customer form settings</h2>
+        </div>
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Business name</label>
+            <input value={form.businessName} onChange={(event) => setField({ businessName: event.target.value })} className={inputClass} />
           </div>
-        </motion.section>
-
-        {/* Campaign status */}
-        <motion.section initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className="rounded-3xl border border-cocoa-100 bg-white p-6 shadow-soft">
-          <h2 className="flex items-center gap-2 font-display text-base font-extrabold text-cocoa-900">
-            <Rocket size={16} className="text-brand-500" /> Campaign Status
-          </h2>
-          <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl bg-cream-50 px-4 py-3.5">
+          <div>
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Cashback amount</label>
+            <div className="relative">
+              <IndianRupee size={15} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-cocoa-300" />
+              <input type="number" min={1} value={form.cashbackAmount} onChange={(event) => setField({ cashbackAmount: Math.max(1, Number(event.target.value) || 1) })} className={`${inputClass} pl-10`} />
+            </div>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Success note</label>
+            <textarea rows={3} value={form.successNote} onChange={(event) => setField({ successNote: event.target.value })} className={`${inputClass} resize-none`} />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Pause message</label>
+            <textarea rows={3} value={form.pauseMessage} onChange={(event) => setField({ pauseMessage: event.target.value })} className={`${inputClass} resize-none`} />
+          </div>
+          <div className="sm:col-span-2 flex items-center justify-between rounded-3xl bg-cream-50 px-4 py-4">
             <div>
-              <p className="text-sm font-extrabold text-cocoa-900">{form.campaignActive ? '🟢 Campaign is Active' : '🔴 Campaign is Paused'}</p>
-              <p className="text-xs font-medium text-cocoa-400">
-                {form.campaignActive ? 'Customers can submit feedback and claim cashback.' : 'Customers see the paused message below.'}
-              </p>
+              <p className="text-sm font-extrabold text-cocoa-900">Campaign status</p>
+              <p className="text-xs font-medium text-cocoa-400">Pause customer submissions anytime</p>
             </div>
             <button
-              onClick={() => set({ campaignActive: !form.campaignActive })}
-              role="switch"
-              aria-checked={form.campaignActive}
-              className={`relative h-8 w-15 shrink-0 rounded-full transition ${form.campaignActive ? 'bg-emerald-500' : 'bg-cocoa-300'}`}
-              style={{ width: 56 }}
+              type="button"
+              onClick={() => setField({ campaignActive: !form.campaignActive })}
+              className={`relative h-8 w-14 rounded-full transition ${form.campaignActive ? 'bg-emerald-500' : 'bg-cocoa-300'}`}
             >
-              <span className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-all ${form.campaignActive ? 'left-[28px]' : 'left-1'}`} />
+              <span className={`absolute top-1 h-6 w-6 rounded-full bg-white transition-all ${form.campaignActive ? 'left-7' : 'left-1'}`} />
             </button>
           </div>
-          {!form.campaignActive && (
-            <div className="mt-3">
-              <Field label="Paused message" hint="Shown to customers while the campaign is paused.">
-                <textarea rows={2} value={form.pausedMessage} onChange={(e) => set({ pausedMessage: e.target.value })} className={`${inputCls} resize-none`} />
-              </Field>
-            </div>
-          )}
-        </motion.section>
+        </div>
+        <button onClick={saveSettings} disabled={busy} className="mt-5 inline-flex items-center gap-2 rounded-2xl bg-gradient-to-b from-brand-400 to-brand-600 px-5 py-3 text-sm font-extrabold text-white shadow-pop transition hover:brightness-105 disabled:opacity-60">
+          {busy ? <Spinner size={16} /> : <Save size={16} />} Save settings
+        </button>
+      </SectionCard>
 
-        {/* Customer copy */}
-        <motion.section initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="rounded-3xl border border-cocoa-100 bg-white p-6 shadow-soft">
-          <h2 className="flex items-center gap-2 font-display text-base font-extrabold text-cocoa-900">
-            <MessageSquareText size={16} className="text-sky-600" /> Customer-Facing Copy
-          </h2>
-          <div className="mt-4 space-y-4">
-            <Field label="Welcome title" hint="The big headline on the welcome screen.">
-              <input value={form.welcomeTitle} onChange={(e) => set({ welcomeTitle: e.target.value })} className={inputCls} />
-            </Field>
-            <Field label="Processing time note" hint="Shown on the cashback form and the success screen.">
-              <div className="relative">
-                <Timer size={15} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-cocoa-300" />
-                <input value={form.processingNote} onChange={(e) => set({ processingNote: e.target.value })} className={`${inputCls} pl-10`} />
-              </div>
-            </Field>
+      <SectionCard>
+        <div className="flex items-center gap-2">
+          <Lock size={18} className="text-brand-600" />
+          <h2 className="font-display text-lg font-extrabold text-cocoa-900">Change admin password</h2>
+        </div>
+        <div className="mt-5 grid gap-4 sm:grid-cols-3">
+          <div>
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Current password</label>
+            <input type="password" value={password.current} onChange={(event) => setPassword((current) => ({ ...current, current: event.target.value }))} className={inputClass} />
           </div>
-        </motion.section>
+          <div>
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">New password</label>
+            <input type="password" value={password.next} onChange={(event) => setPassword((current) => ({ ...current, next: event.target.value }))} className={inputClass} />
+          </div>
+          <div>
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Confirm password</label>
+            <input type="password" value={password.confirm} onChange={(event) => setPassword((current) => ({ ...current, confirm: event.target.value }))} className={inputClass} />
+          </div>
+        </div>
+        <button onClick={changePassword} disabled={busy} className="mt-5 rounded-2xl bg-cocoa-900 px-5 py-3 text-sm font-extrabold text-white transition hover:bg-cocoa-800 disabled:opacity-60">
+          {busy ? 'Saving...' : 'Change password'}
+        </button>
+      </SectionCard>
 
-        {/* Save */}
-        <motion.section initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="flex items-center gap-3">
-          <button
-            onClick={save}
-            disabled={busy}
-            className={`btn-shine flex items-center gap-2 rounded-2xl px-6 py-3.5 text-sm font-extrabold text-white shadow-pop transition active:scale-[0.97] disabled:opacity-60 ${
-              saved ? 'bg-emerald-500' : 'bg-gradient-to-b from-brand-400 to-brand-600 hover:brightness-105'
-            }`}
-          >
-            {busy ? <Spinner size={15} /> : saved ? <>✓ Saved!</> : <><Save size={15} /> Save Settings</>}
-          </button>
-          <p className="text-[11px] font-medium text-cocoa-300">Changes apply immediately for new visitors.</p>
-        </motion.section>
-
-        {/* Security note */}
-        <motion.section initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="rounded-3xl border border-cocoa-100 bg-white p-6 shadow-soft">
-          <h2 className="flex items-center gap-2 font-display text-base font-extrabold text-cocoa-900">
-            <ShieldCheck size={16} className="text-emerald-600" /> Security & Future Roadmap
-          </h2>
-          <ul className="mt-3 space-y-2 text-xs font-semibold leading-relaxed text-cocoa-500">
-            <li>🔐 Admin access is protected by Firebase Authentication + an `admins` whitelist + Firestore/Storage rules — the URL alone grants nothing.</li>
-            <li>🚫 Customers can only create submissions; they can never read or list others' data (enforced by security rules).</li>
-            <li>🧱 The data model is ready for: item-specific ratings, menu analytics, campaigns, phone/OTP verification, and auto-payments.</li>
-            <li>🤖 Future: AI review generation, AI complaint detection, WhatsApp notifications, duplicate screenshot detection.</li>
-          </ul>
-        </motion.section>
-      </div>
+      {message ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</div> : null}
+      {error ? <ErrorBox>{error}</ErrorBox> : null}
     </div>
   )
 }
