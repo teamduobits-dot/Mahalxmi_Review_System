@@ -20,7 +20,16 @@ from database import DEFAULT_ADMIN_EMAIL, UPLOADS_DIR, get_connection, init_db, 
 from security import hash_password, verify_password
 
 ALLOWED_STATUSES = {"pending", "approved", "paid", "rejected"}
-SESSION_SECRET = os.getenv("SESSION_SECRET", "mahalaxmi-local-secret")
+
+# The signing secret must come from the environment in production — with the
+# hard-coded fallback, anyone could mint a valid admin token.
+_APP_ENV = os.getenv("APP_ENV", "").strip().lower()
+if _APP_ENV == "production" and not os.getenv("SESSION_SECRET", "").strip():
+    raise RuntimeError(
+        "SESSION_SECRET must be set as an environment variable when APP_ENV=production. "
+        "The default local secret is disabled in production."
+    )
+SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or "mahalaxmi-local-secret"
 GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or os.getenv("VITE_GOOGLE_CLIENT_ID") or "").strip()
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BACKEND_DIR.parent
@@ -47,6 +56,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
 
 
 def public_settings_payload() -> dict:
@@ -135,21 +151,37 @@ def verify_google_token(credential: str) -> dict:
     return admin_session_payload(email)
 
 
+def detect_image_extension(content: bytes) -> str | None:
+    """Identify the image type from the file's actual bytes (magic numbers).
+
+    Only PNG / JPEG / WebP are accepted; everything else returns None.
+    This — not the client-supplied filename or Content-Type header — is the
+    source of truth, which prevents e.g. uploading `x.html` as "image/png".
+    """
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
 async def validate_image(file: UploadFile | None, field_name: str) -> UploadFile:
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail=f"{field_name} is required.")
-    if not (file.content_type or "").startswith("image/"):
-        raise HTTPException(status_code=400, detail=f"{field_name} must be an image.")
     return file
 
 
 async def save_upload(file: UploadFile, prefix: str) -> str:
-    extension = Path(file.filename or "upload.jpg").suffix.lower() or ".jpg"
-    name = f"{prefix}-{uuid4().hex}{extension}"
-    target = UPLOADS_DIR / name
     content = await file.read()
     if len(content) > 8 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Image must be under 8 MB.")
+    extension = detect_image_extension(content)
+    if not extension:
+        raise HTTPException(status_code=400, detail="Only PNG, JPEG or WebP images are accepted.")
+    name = f"{prefix}-{uuid4().hex}{extension}"
+    target = UPLOADS_DIR / name
     target.write_bytes(content)
     return f"/uploads/{name}"
 
@@ -369,7 +401,6 @@ def get_submission(request: Request, submission_id: int) -> dict:
 def update_submission(request: Request, submission_id: int, payload: dict) -> dict:
     require_admin(request)
     status = payload.get("status")
-    admin_notes = str(payload.get("adminNotes", "")).strip()
     if status and status not in ALLOWED_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status.")
 
@@ -378,6 +409,12 @@ def update_submission(request: Request, submission_id: int, payload: dict) -> di
         if not existing:
             raise HTTPException(status_code=404, detail="Submission not found.")
         current = row_to_dict(existing)
+        # Only overwrite notes when the client actually sent the field, so a
+        # status-only PATCH never wipes existing admin notes.
+        if payload.get("adminNotes") is None:
+            admin_notes = current.get("admin_notes") or ""
+        else:
+            admin_notes = str(payload["adminNotes"]).strip()
 
         next_status = status or current["status"]
         approved_at = current.get("approved_at")
@@ -413,10 +450,15 @@ def dashboard(request: Request) -> dict:
     return {"submissions": submissions, "stats": {"total": len(submissions), **counts}}
 
 
+# index.html must never be cached, or a redeployed frontend can keep serving a
+# stale bundle (and a stale bundle keeps pointing at an old backend).
+NO_CACHE_HTML = {"Cache-Control": "no-cache"}
+
+
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def frontend_index():
     if FRONTEND_INDEX.exists():
-        return FileResponse(FRONTEND_INDEX)
+        return FileResponse(FRONTEND_INDEX, headers=NO_CACHE_HTML)
     return {
         "ok": True,
         "message": "Frontend build not found yet.",
@@ -439,7 +481,7 @@ def frontend_files(full_path: str):
             return FileResponse(candidate)
 
     if FRONTEND_INDEX.exists():
-        return FileResponse(FRONTEND_INDEX)
+        return FileResponse(FRONTEND_INDEX, headers=NO_CACHE_HTML)
     raise HTTPException(status_code=404, detail="Not found.")
 
 

@@ -59,6 +59,7 @@ const STEP_ITEMS = [
 
 export default function CustomerForm() {
   const [settings, setSettings] = useState(null)
+  const [settingsError, setSettingsError] = useState(null)
   const [form, setForm] = useState(INITIAL_FORM)
   const [touched, setTouched] = useState({})
   const [busy, setBusy] = useState(false)
@@ -70,6 +71,9 @@ export default function CustomerForm() {
   const formRef = useRef(null)
   const scrollAnimationRef = useRef(null)
 
+  // Initial settings load. State updates happen only inside promise callbacks,
+  // and a failed load is recorded in `settingsError` (network vs. other) so
+  // the failure screen can say exactly what is wrong and offer a retry.
   useEffect(() => {
     let active = true
     let timer
@@ -80,18 +84,21 @@ export default function CustomerForm() {
       .then((data) => {
         if (!active) return
         setSettings(data)
-        setError('')
+        setSettingsError(null)
       })
-      .catch((err) => {
+      .catch((loadError) => {
         if (!active) return
-        setError(err.message)
+        setSettingsError({
+          message: loadError?.message || 'Unable to load the cashback form.',
+          isNetwork: Boolean(loadError?.isNetwork),
+        })
       })
       .finally(() => {
+        // Always keep at least the ~1.2 s branded splash before showing the page.
         const elapsed = Date.now() - startedAt
-        const delay = Math.max(0, 1200 - elapsed)
         timer = window.setTimeout(() => {
           if (active) setLoading(false)
-        }, delay)
+        }, Math.max(0, 1200 - elapsed))
       })
 
     return () => {
@@ -99,6 +106,26 @@ export default function CustomerForm() {
       if (timer) window.clearTimeout(timer)
     }
   }, [])
+
+  const retrySettings = () => {
+    setLoading(true)
+    setError('')
+    setSettingsError(null)
+    const startedAt = Date.now()
+    api
+      .getSettings()
+      .then((data) => setSettings(data))
+      .catch((loadError) => {
+        setSettingsError({
+          message: loadError?.message || 'Unable to load the cashback form.',
+          isNetwork: Boolean(loadError?.isNetwork),
+        })
+      })
+      .finally(() => {
+        const elapsed = Date.now() - startedAt
+        window.setTimeout(() => setLoading(false), Math.max(0, 1200 - elapsed))
+      })
+  }
 
   const validations = useMemo(() => {
     const nameOk = form.customerName.trim().length >= 2
@@ -243,21 +270,29 @@ export default function CustomerForm() {
   }
 
   if (!settings) {
+    const isNetwork = Boolean(settingsError?.isNetwork)
     return (
       <div className="relative min-h-screen overflow-hidden surface-warm px-4 py-8 sm:px-6">
         <FloatingFood count={4} opacity={0.14} />
         <main className="relative z-10 mx-auto max-w-md pt-safe">
           <SectionCard className="mt-6 text-center">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-red-50 text-3xl">⚠️</div>
-            <h1 className="mt-4 font-display text-2xl font-extrabold text-cocoa-950">Unable to open cashback form</h1>
-            <p className="mt-2 text-sm font-medium leading-relaxed text-cocoa-500">Please refresh and try again.</p>
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-red-50 text-3xl">{isNetwork ? '📡' : '⚠️'}</div>
+            <h1 className="mt-4 font-display text-2xl font-extrabold text-cocoa-950">
+              {isNetwork ? 'Cannot reach the backend' : 'Unable to open cashback form'}
+            </h1>
+            <p className="mt-2 text-sm font-medium leading-relaxed text-cocoa-500">
+              {isNetwork
+                ? 'The form could not connect to the Mahalaxmi backend API. If you are running locally, start the backend on port 8000 (uvicorn main:app) and make sure you are opening the Vite dev URL on port 5173, then press Retry.'
+                : `Something went wrong while loading the form. ${settingsError?.message || 'Please retry.'}`}
+            </p>
             {error ? <div className="mt-4"><ErrorBox>{error}</ErrorBox></div> : null}
             <button
               type="button"
-              onClick={() => window.location.reload()}
-              className="mt-4 w-full rounded-2xl bg-cocoa-900 px-4 py-3.5 text-sm font-extrabold text-white transition hover:bg-cocoa-800"
+              onClick={retrySettings}
+              disabled={loading}
+              className="mt-4 w-full rounded-2xl bg-cocoa-900 px-4 py-3.5 text-sm font-extrabold text-white transition hover:bg-cocoa-800 disabled:opacity-60"
             >
-              Reload page
+              {loading ? 'Checking…' : 'Retry'}
             </button>
           </SectionCard>
         </main>

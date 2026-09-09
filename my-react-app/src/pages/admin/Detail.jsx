@@ -3,7 +3,7 @@ import { ArrowLeft, CheckCircle2, IndianRupee, QrCode, XCircle } from 'lucide-re
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ImageCell } from '../../components/admin'
 import { ErrorBox, LightboxArea, SectionCard, Spinner, StatusPill } from '../../components/ui'
-import { api } from '../../lib/api'
+import { api, assetUrl } from '../../lib/api'
 import { formatDateTime, money } from '../../lib/format'
 
 export default function Detail({ settings, onUpdated }) {
@@ -56,6 +56,11 @@ export default function Detail({ settings, onUpdated }) {
     )
   }
 
+  // assetUrl() prefixes the API base when frontend and backend are hosted
+  // separately, so thumbnails/lightbox work in both setups.
+  const reviewUrl = assetUrl(submission.reviewScreenshotUrl)
+  const qrUrl = assetUrl(submission.upiQrUrl)
+
   return (
     <LightboxArea src={lightbox} onClose={() => setLightbox(null)}>
       <div className="mx-auto max-w-5xl">
@@ -82,8 +87,8 @@ export default function Detail({ settings, onUpdated }) {
 
             <SectionCard>
               <h2 className="font-display text-lg font-extrabold text-cocoa-900">Review screenshot</h2>
-              <button onClick={() => setLightbox(submission.reviewScreenshotUrl)} className="mt-4 overflow-hidden rounded-3xl border border-cocoa-100 transition hover:opacity-90">
-                <ImageCell src={submission.reviewScreenshotUrl} className="h-72 w-full object-contain" alt="Review screenshot" />
+              <button onClick={() => setLightbox(reviewUrl)} className="mt-4 overflow-hidden rounded-3xl border border-cocoa-100 transition hover:opacity-90">
+                <ImageCell src={reviewUrl} className="h-72 w-full object-contain" alt="Review screenshot" />
               </button>
             </SectionCard>
 
@@ -99,8 +104,8 @@ export default function Detail({ settings, onUpdated }) {
                 ) : (
                   <div>
                     <p className="text-[11px] font-black uppercase tracking-wider text-cocoa-400">UPI QR</p>
-                    <button onClick={() => setLightbox(submission.upiQrUrl)} className="mt-2 overflow-hidden rounded-3xl border border-cocoa-100 transition hover:opacity-90">
-                      <ImageCell src={submission.upiQrUrl} className="h-56 w-full object-contain" alt="UPI QR" />
+                    <button onClick={() => setLightbox(qrUrl)} className="mt-2 overflow-hidden rounded-3xl border border-cocoa-100 transition hover:opacity-90">
+                      <ImageCell src={qrUrl} className="h-56 w-full object-contain" alt="UPI QR" />
                     </button>
                   </div>
                 )}
@@ -148,7 +153,7 @@ export default function Detail({ settings, onUpdated }) {
                   Open dashboard
                 </Link>
                 {submission.payoutMethod === 'qr' ? (
-                  <button onClick={() => setLightbox(submission.upiQrUrl)} className="rounded-2xl border border-cocoa-200 bg-white px-4 py-3 text-sm font-bold text-cocoa-700 transition hover:border-brand-300 hover:text-brand-600">
+                  <button onClick={() => setLightbox(qrUrl)} className="rounded-2xl border border-cocoa-200 bg-white px-4 py-3 text-sm font-bold text-cocoa-700 transition hover:border-brand-300 hover:text-brand-600">
                     <span className="inline-flex items-center gap-2"><QrCode size={15} /> View UPI QR</span>
                   </button>
                 ) : null}

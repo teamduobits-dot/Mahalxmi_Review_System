@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
-import { CheckCircle2, ClipboardList, IndianRupee, Search, Wallet } from 'lucide-react'
+import { CheckCircle2, ClipboardList, IndianRupee, Inbox, Search, Wallet } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { ImageCell, StatCard } from '../../components/admin'
 import { StatusPill } from '../../components/ui'
+import { assetUrl } from '../../lib/api'
 import { formatDateTime, money } from '../../lib/format'
 
 const FILTERS = ['all', 'pending', 'approved', 'paid', 'rejected']
@@ -105,7 +106,7 @@ export default function Dashboard({ submissions, settings, onRefresh, loading })
                   <td className="px-3 py-3 font-semibold text-cocoa-800">{item.customerName}</td>
                   <td className="px-3 py-3 font-mono font-bold text-cocoa-700">{item.orderLast4}</td>
                   <td className="px-3 py-3">
-                    <ImageCell src={item.reviewScreenshotUrl} className="h-12 w-12" alt={`${item.customerName} review`} />
+                    <ImageCell src={assetUrl(item.reviewScreenshotUrl)} className="h-12 w-12" alt={`${item.customerName} review`} />
                   </td>
                   <td className="px-3 py-3 text-xs font-semibold text-cocoa-700">
                     {item.payoutMethod === 'upi' ? item.upiId : 'UPI QR uploaded'}
@@ -116,7 +117,22 @@ export default function Dashboard({ submissions, settings, onRefresh, loading })
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-14 text-center text-sm font-semibold text-cocoa-400">No submissions found.</td>
+                  <td colSpan={7} className="px-3 py-14 text-center">
+                    {submissions.length === 0 ? (
+                      <div className="mx-auto max-w-sm">
+                        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-cream-100 text-cocoa-300">
+                          <Inbox size={26} />
+                        </div>
+                        <p className="mt-3 text-sm font-bold text-cocoa-600">No submissions yet</p>
+                        <p className="mt-1 text-xs font-medium leading-5 text-cocoa-400">
+                          This database is fresh, so the dashboard is empty — that is normal, not an error.
+                          New cashback claims from the customer form will appear here.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-sm font-semibold text-cocoa-400">No submissions match your current filter or search.</p>
+                    )}
+                  </td>
                 </tr>
               )}
             </tbody>
