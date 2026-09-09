@@ -39,6 +39,22 @@ function isAuthPath(path) {
   return AUTH_PATHS.some((authPath) => path.startsWith(authPath))
 }
 
+// Every endpoint in this app answers with JSON. Anything else — Vite's empty
+// 502 text/plain when the backend is down, an HTML error/fallback page from a
+// proxy or a stale backend — means we are NOT talking to the real API. Treat
+// it as "backend unreachable" so the UI shows the proper retry screens
+// instead of rendering a fake page (₹0 cashback + "paused" + blank badge)
+// or failing silently (empty login error).
+function unreachableError(response) {
+  const detail = response && response.status ? ` (HTTP ${response.status})` : ''
+  const error = new Error(
+    `Cannot reach the backend API${detail}. Make sure the backend is running on port 8000, then retry.`
+  )
+  error.isNetwork = true
+  if (response) error.status = response.status
+  return error
+}
+
 async function fetchWithRetry(path, options) {
   try {
     return await fetch(path, options)
@@ -69,10 +85,20 @@ async function apiFetch(path, options = {}) {
   })
 
   const contentType = response.headers.get('content-type') || ''
-  const data = contentType.includes('application/json') ? await response.json() : await response.text()
+  if (!contentType.includes('application/json')) {
+    throw unreachableError(response)
+  }
+
+  let data
+  try {
+    data = await response.json()
+  } catch {
+    // JSON content-type but unreadable body — same story: not the real API.
+    throw unreachableError(response)
+  }
 
   if (!response.ok) {
-    const message = typeof data === 'string' ? data : data?.detail || 'Request failed.'
+    const message = data?.detail || 'Request failed.'
     // Only drop the token when an *auth* endpoint rejects it. A 401 from a
     // data endpoint must never force the user back to the login screen.
     if (response.status === 401 && isAuthPath(path)) setToken('')
