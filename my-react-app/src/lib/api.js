@@ -1,4 +1,4 @@
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const TOKEN_KEY = 'mm_admin_token'
 const AUTH_PATHS = ['/api/auth/me', '/api/auth/login', '/api/auth/google']
 const RETRY_DELAY_MS = 700

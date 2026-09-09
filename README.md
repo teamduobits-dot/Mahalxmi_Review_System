@@ -38,40 +38,55 @@ You can change the password from the admin settings screen.
 mode all hard-coded defaults are disabled and the server refuses to start if
 any of them is missing — never deploy with the default password.
 
-## Optional Google login for admin
-A Google sign-in button is added in the admin login page.
-To make it work, set a Google OAuth Client ID in the frontend env:
+## Local setup (quick start)
 
-```env
-VITE_GOOGLE_CLIENT_ID=your-google-oauth-client-id.apps.googleusercontent.com
-```
+**Prerequisites:** Node.js 20+ and Python 3.10+.
+(Windows PowerShell: use `.venv\Scripts\` instead of `.venv/bin/`, and `curl.exe` instead of `curl`.)
 
-The backend accepts only the allowed admin email after Google verification.
-
-## Local development
-
-### 1) Start backend
+### 1) Install (first time only)
 ```bash
-cd backend
-../.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
-```
+# backend — virtual env at the repo root
+python -m venv .venv
+.venv/bin/pip install -r backend/requirements.txt
 
-### 2) Start frontend
-```bash
+# frontend
 cd my-react-app
 npm install
-npm run dev
+cd ..
 ```
 
-### 3) Open app
+### 2) Run (two terminals)
+```bash
+# terminal 1 — backend API on port 8000
+cd backend
+../.venv/bin/python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# terminal 2 — frontend on port 5173
+cd my-react-app
+npm run dev
+```
+First start creates and seeds `backend/mahalaxmi.db` (admin + settings) automatically.
+
+### 3) Open
 - Customer form: `http://localhost:5173/`
-- Admin: `http://localhost:5173/#/admin`
+- Admin panel: `http://localhost:5173/#/admin` (use the credentials above)
+- API docs (Swagger): `http://localhost:8000/docs`
+
+### 4) Optional env vars — copy `my-react-app/.env.example` to `my-react-app/.env`
+- `VITE_API_BASE_URL` — **leave empty in local dev** (Vite proxies `/api` and `/uploads` to port 8000). Set it to your backend URL only when the frontend is hosted elsewhere. Restart `npm run dev` after any `.env` change.
+- `VITE_GOOGLE_CLIENT_ID` — enables the Google sign-in button on the admin login (only the allowed admin email can sign in).
 
 ## Notes for later cloud deployment
 The frontend uses relative `/api` and `/uploads` paths in local dev through Vite proxy.
 For cloud deployment later, set `VITE_API_BASE_URL` to your backend URL — image
 URLs (`/uploads/...`) are automatically prefixed with it by the frontend, so a
 separately-hosted backend works out of the box.
+
+The GitHub Pages deploy (`.github/workflows/deploy.yml`) bakes in
+`VITE_API_BASE_URL` from a **repository variable** of the same name
+(Settings → Secrets and variables → Actions). Until you set it, the deployed
+site can only talk to a backend on its own origin — that is why a deployed
+page with no backend URL shows login errors while the local app works.
 
 Start the backend with `APP_ENV=production`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` and
 `SESSION_SECRET` set (see above). SQLite + local disk uploads are meant for a

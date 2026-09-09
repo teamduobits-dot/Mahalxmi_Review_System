@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Lock, Mail } from 'lucide-react'
 import { Spinner } from '../../components/ui'
+import { API_BASE } from '../../lib/api'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 
@@ -163,6 +164,14 @@ export default function Login({ defaultEmail, onLogin, onGoogleLogin, error }) {
             {busy ? <Spinner size={17} /> : 'Sign in to admin'}
           </button>
         </form>
+
+        <p className="mt-5 text-center text-[10px] font-semibold leading-4 text-cream-200/40">
+          Login requests go to:{' '}
+          <span className="font-mono text-cream-200/60">
+            {API_BASE ? `${API_BASE}/api` : 'same origin (/api — Vite proxy → port 8000)'}
+          </span>
+          {error ? ' If login fails here but the API works in Swagger/docs, the page you are on is not talking to that backend.' : null}
+        </p>
       </motion.div>
     </div>
   )
