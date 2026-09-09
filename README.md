@@ -103,6 +103,10 @@ single always-on host (VPS/container), not ephemeral/serverless platforms.
 - The admin panel distinguishes "backend unreachable" (auto-retries with a
   visible offline screen) from "not logged in", and keeps you logged in through
   transient data-refresh failures.
+- The customer form does the same: if `/api/settings` does not come back as
+  JSON (e.g. the Vite proxy's 502 while the backend is down), it shows a
+  "Cannot reach the backend" screen with a Retry button — it can never render
+  a fake ₹0 / "paused" page from a proxy error again.
 
 ## Backend files
 - `backend/main.py` — API routes

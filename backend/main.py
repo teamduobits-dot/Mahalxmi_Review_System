@@ -351,7 +351,12 @@ def get_admin_settings(request: Request) -> dict:
 def update_admin_settings(request: Request, payload: dict) -> dict:
     require_admin(request)
     business_name = str(payload.get("businessName", "")).strip() or "Mahalaxmi Multi Cuisine"
-    cashback_amount = int(payload.get("cashbackAmount", 15) or 15)
+    try:
+        cashback_amount = int(payload.get("cashbackAmount", 15))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Cashback amount must be a number.")
+    if not 1 <= cashback_amount <= 10_000:
+        raise HTTPException(status_code=400, detail="Cashback amount must be between 1 and 10000.")
     campaign_active = 1 if payload.get("campaignActive", True) else 0
     pause_message = str(payload.get("pauseMessage", "")).strip() or "Cashback submissions are paused right now. Please try again shortly."
     success_note = str(payload.get("successNote", "")).strip() or "Cashback will be checked and processed after review."
