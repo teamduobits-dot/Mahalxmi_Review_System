@@ -75,6 +75,12 @@ First start creates and seeds `backend/mahalaxmi.db` (admin + settings) automati
 ### 4) Optional env vars — copy `my-react-app/.env.example` to `my-react-app/.env`
 - `VITE_API_BASE_URL` — **leave empty in local dev** (Vite proxies `/api` and `/uploads` to port 8000). Set it to your backend URL only when the frontend is hosted elsewhere. Restart `npm run dev` after any `.env` change.
 - `VITE_GOOGLE_CLIENT_ID` — enables the Google sign-in button on the admin login (only the allowed admin email can sign in).
+- `VITE_BACKEND_URL` — dev-server only: overrides where the Vite proxy sends `/api` and `/uploads` (default `http://127.0.0.1:8000`). Set it only if your backend runs on a different port/host.
+
+> **Ports are fixed by design:** frontend `5173`, backend `8000` (preview `4173`). The dev
+> server uses `strictPort: true`, so if a port is busy it **fails loudly** instead of
+> silently shifting to `5174`/`8001` and breaking the proxy + docs. Kill whatever holds
+> the port (`netstat -ano | findstr :5173` on Windows) and restart.
 
 ## Notes for later cloud deployment
 The frontend uses relative `/api` and `/uploads` paths in local dev through Vite proxy.
@@ -84,13 +90,22 @@ separately-hosted backend works out of the box.
 
 The GitHub Pages deploy (`.github/workflows/deploy.yml`) bakes in
 `VITE_API_BASE_URL` from a **repository variable** of the same name
-(Settings → Secrets and variables → Actions). Until you set it, the deployed
+(Settings → Secrets and variables → Actions → Variables). Until you set it, the deployed
 site can only talk to a backend on its own origin — that is why a deployed
 page with no backend URL shows login errors while the local app works.
 
 Start the backend with `APP_ENV=production`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` and
 `SESSION_SECRET` set (see above). SQLite + local disk uploads are meant for a
 single always-on host (VPS/container), not ephemeral/serverless platforms.
+
+**Admin auth is multi-channel on purpose.** The login response returns a signed bearer
+token, and the frontend keeps it in localStorage (+ an in-memory fallback and a
+first-party cookie) and sends it on every admin request as `Authorization: Bearer`,
+`X-Admin-Token`, a `?admin_token=` query parameter, and the `mm_admin_token` cookie —
+whichever of these survives the hosting/proxy environment wins. This keeps the admin
+panel working behind preview gateways and proxies that strip headers or block storage
+(e.g. sandboxed preview iframes). Note the query-parameter copy does appear in the
+backend's access log; rotate `SESSION_SECRET` to invalidate all outstanding tokens.
 
 ## Operational notes
 - **Always use the Vite dev URL (port 5173) for the UI in local dev.** Port 8000

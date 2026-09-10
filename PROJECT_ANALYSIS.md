@@ -1,6 +1,6 @@
 # Project Analysis — Mahalaxmi Review / Cashback System
 
-*Analyzed: 2026-09-09 · Branch: `arena/01a0883a-mahalxmi-review-system` (commit `8fa507d`) — this document supersedes the previous analysis and reflects the current state after the cleanup/hardening merge (PR #4).*
+*Analyzed 2026-09-10 · Branch: `arena/01a08a4b-mahalxmi-review-system` (== `main` tip, commit `8f9161f`, merge of PR #5), updated again 2026-09-10 after the multi-channel-auth fix session. This document supersedes the previous analyses and reflects the current working tree, re-verified end-to-end on a fresh database (31 check groups, 70+ individual assertions — see §5).*
 
 ---
 
@@ -14,26 +14,40 @@ through `pending → approved → paid` (or `rejected`), with admin notes, searc
 campaign pause controls, and a change-password screen.
 
 - **Frontend** — React 19 + Vite 8 + Tailwind CSS 4 (`my-react-app/`), HashRouter, framer-motion
-- **Backend** — FastAPI + SQLite + local file uploads (`backend/`), ~665 lines of Python
-- **~2,750 lines of live frontend source** — the large dead Firebase/legacy layer flagged in the
-  previous analysis (~40 % of the frontend) has been **fully removed**, along with the `firebase`
-  dependency, the Firestore/Storage rule files, and `firebase.json`
+- **Backend** — FastAPI + SQLite + local file uploads (`backend/`), ~670 lines of Python
+- **~2,750 lines of live frontend source** — no dead Firebase/legacy layer, no `firebase`
+  dependency (grep-verified, source and production bundle)
 
-The system was **re-verified end-to-end during this analysis** (28 checks — see §5): install,
-lint, production build, backend boot + seeding, customer submissions (UPI and QR), the
-hardened upload path, auth (success/failure paths, bearer + session), admin workflow
-transitions, notes preservation, search/filter, static upload serving with `nosniff`, path
-traversal resistance, and SPA hosting from the backend.
+The system was **re-verified end-to-end during this analysis** (60+ assertions across 28 check groups — see §5): install,
+lint, production build, backend boot + seeding, customer submissions (UPI, QR, and WebP),
+the hardened upload path, auth (success/failure paths, bearer + session, tampered tokens),
+admin workflow transitions, notes preservation, search/filter, static upload serving with
+`nosniff`, path traversal resistance, SPA hosting from the backend, campaign pause/resume,
+the Vite-proxy failure mode that PR #5 fixed, and the GitHub Pages deploy chain.
 
 **Overall verdict:** clean, small, genuinely functional code for a local / single-restaurant
-tool — and materially **more secure than at the last review** (stored-XSS upload fix, magic-byte
-validation, production fail-fast on missing secrets, relative-URL fix for split hosting).
-It is still **not production-ready as-is**. Top remaining gaps: (1) the GitHub Pages workflow
-deploys a frontend that cannot reach any backend — and the README's claim about
-`VITE_API_BASE_URL` is not implemented in the workflow; (2) no rate limiting on login and
-default credentials documented in a public repo; (3) admin tokens never expire and are not
-revoked on password change; (4) settings validation bugs (HTTP 500 on bad input, negative
-cashback accepted); (5) zero tests / no backend CI.
+tool. Relative to the previous analysis, one previously-listed bug is now **fixed and
+verified**: `PUT /api/admin/settings` no longer 500s on non-numeric input and no longer
+accepts negative cashback (both now return 400 — see §5 check 13; the previous
+analysis listed this as an open gap).
+
+It is still **not production-ready as-is**. Top remaining gaps: (1) GitHub Pages deploys a
+frontend that needs a backend on a separate host — the workflow now wires the
+`VITE_API_BASE_URL` repo variable correctly, but no backend host exists yet and the repo
+variable is still unset; (2) no rate limiting on login/submissions; (3) admin tokens
+never expire and are not revoked on password change; (4) zero tests / no backend CI;
+(5) hard-coded ₹15/₹40 SEO copy that drifts when settings change.
+
+**Fixed during this session (2026-09-10):** the live-preview admin 401 bug — login
+succeeded but every follow-up admin call failed with 401 because the preview
+gateway/iframe stripped or blocked the single auth channel. Auth is now multi-channel
+(token stored in memory + localStorage + a first-party cookie; sent as
+`Authorization: Bearer`, `X-Admin-Token`, `?admin_token=`, and the `mm_admin_token`
+cookie), the backend accepts all of them, failed auth logs exactly which channels
+arrived, logout no longer crashes when the backend is down, the Vite dev server pins
+its ports with `strictPort: true` (+ `VITE_BACKEND_URL` proxy override), and the GitHub
+Pages workflow now truly bakes `VITE_API_BASE_URL` into the build. All five auth
+channels and the reject paths were re-verified (checks 25–30).
 
 ---
 
@@ -41,21 +55,22 @@ cashback accepted); (5) zero tests / no backend CI.
 
 ```
 Mahalxmi_Review_System/
-├── README.md                      ← accurate, honest, covers run + deploy + troubleshooting
+├── README.md                      ← accurate on run/deploy/troubleshooting, but §deploy
+│                                    claim about VITE_API_BASE_URL is not implemented (§7.1)
 ├── PROJECT_ANALYSIS.md            ← this file
 ├── WINDOWS_LOCAL_SETUP.md         ← PowerShell run/troubleshoot guide (337 ln, good)
 ├── package-lock.json              ← empty stub, no root package.json — noise, deletable
 ├── .github/workflows/deploy.yml   ← GitHub Pages deploy: frontend only (see §7 gap)
 ├── .gitignore                     ← correctly ignores db, uploads, dist, .venv, backend/.env
 └── backend/                       ← LIVE API (Python 3.10+, no framework DB/ORM)
-    ├── main.py          (490 ln)  all routes, auth, upload hardening, SPA hosting
+    ├── main.py          (496 ln)  all routes, auth, upload hardening, SPA hosting
     ├── database.py      (142 ln)  SQLite schema + idempotent seeding + migrations
     ├── security.py       (32 ln)  PBKDF2-SHA256 (120k iters, per-user salt)
     └── requirements.txt           fastapi 0.116.1, uvicorn 0.35.0, python-multipart, itsdangerous (all pinned)
 
 my-react-app/                      ← LIVE frontend (React 19.2, Vite 8.2, Tailwind 4.3)
-├── vite.config.js                 ← /api + /uploads dev proxy → 8000; allowedHosts for previews
-├── index.html                     ← SEO meta (hard-coded ₹15/₹40 copy — drift risk)
+├── vite.config.js                 ← /api + /uploads dev proxy → 8000; host+allowedHosts open
+├── index.html                     ← SEO meta (hard-coded ₹15/₹40 copy — drift risk, §6.4)
 └── src/
     ├── App.jsx                    HashRouter: "/" → CustomerForm, "/admin/*" → lazy AdminApp
     ├── main.jsx                   StrictMode entry
@@ -74,7 +89,7 @@ my-react-app/                      ← LIVE frontend (React 19.2, Vite 8.2, Tail
 **Dependencies are lean and current**: react 19.2.8, react-router-dom 7.18.3,
 framer-motion 13.2, lucide-react 1.42, tailwindcss 4.3.3, vite 8.2.2, eslint 10.9.
 No state-management, HTTP, or UI-kit libraries — everything is hand-rolled, which keeps
-the bundle honest (one 129 kB-gzip main chunk + a 9 kB-gzip lazy admin chunk).
+the bundle honest (one 129.6 kB-gzip main chunk + a 9.0 kB-gzip lazy admin chunk).
 
 ---
 
@@ -96,13 +111,13 @@ the bundle honest (one 129 kB-gzip main chunk + a 9 kB-gzip lazy admin chunk).
 ### 3.2 Admin side (`/#/admin` — `AdminApp.jsx` shell)
 
 - **Login** (`Login.jsx`): email/password + optional Google Identity Services button
-  (rendered only when `VITE_GOOGLE_CLIENT_ID` is set). Email is pre-filled, password is not
-  (fixed since last review). Server accepts only the single allowed admin email.
+  (rendered only when `VITE_GOOGLE_CLIENT_ID` is set). Email is pre-filled, password is not.
+  Server accepts only the single allowed admin email.
 - **AdminApp** probes `/api/auth/me` on mount and carefully distinguishes three states:
   *logged in*, *not logged in*, *backend unreachable* (auto-retry every 5 s with a dedicated
   offline screen + "Retry now"). Data (submissions + settings) refreshes every 15 s;
-  a failed refresh shows a banner but **never** forces logout — only 401-on-auth-endpoint
-  clears the stored token. This resilience layer is genuinely well-engineered.
+  a failed refresh shows a banner but **never** forces logout — only an explicit re-login
+  clears state. This resilience layer is genuinely well-engineered.
 - **Dashboard**: stat cards (total/pending/approved/paid/rejected + paid ₹ total), filter
   chips, text search (client-side filter over the polled list), table with review thumbnail
   and status pill.
@@ -125,8 +140,9 @@ the bundle honest (one 129 kB-gzip main chunk + a 9 kB-gzip lazy admin chunk).
 **Data model** (SQLite, auto-created + seeded at startup):
 
 - `admin_users(id, email UNIQUE, password_hash, created/updated_at)` — seeded from
-  `ADMIN_EMAIL`/`ADMIN_PASSWORD`; **in `APP_ENV=production` these env vars are mandatory
-  and the server refuses to boot without them** (dev keeps documented defaults).
+  `ADMIN_EMAIL`/`ADMIN_PASSWORD`; **in `APP_ENV=production` these env vars (and
+  `SESSION_SECRET`) are mandatory and the server refuses to boot without them**
+  (verified — check 22; dev keeps documented defaults).
 - `app_settings(id=1, business_name, cashback_amount, campaign_active, pause_message, success_note, …)`.
 - `submissions(id, reference UNIQUE, customer_name, order_last4, customer_comment
   [never collected — §6.3], review_screenshot_path, payout_method, upi_id, upi_qr_path,
@@ -137,66 +153,124 @@ sets a signed session cookie (starlette SessionMiddleware) and returns a signed 
 (itsdangerous URLSafeSerializer) stored in `localStorage`. `resolve_admin()` accepts either.
 Google login verifies the ID token against `oauth2.googleapis.com/tokeninfo` with
 `aud` + `email_verified` + email-allowlist checks. Approving/paid stamps `approved_at` /
-`paid_at`; there is no enforced status workflow (admin may jump any state to any state —
-the UI only offers forward actions, so acceptable for a single-admin tool).
+`paid_at`; there is no enforced status workflow (admin may jump any state to any state — the
+UI only offers forward actions, so acceptable for a single-admin tool).
 
-**Upload hardening (new since last review, verified):** `detect_image_extension()` sniffs
-magic bytes (PNG/JPEG/WebP only); the extension is derived from the bytes, never from the
-client filename or Content-Type; a global middleware adds `X-Content-Type-Options: nosniff`.
-An HTML file sent as `image/png` is now rejected with 400.
+**Upload hardening (verified):** `detect_image_extension()` sniffs magic bytes (PNG/JPEG/WebP
+only); the extension is derived from the bytes, never from the client filename or
+Content-Type; a global middleware adds `X-Content-Type-Options: nosniff`. An HTML file sent
+as `image/png` is rejected with 400 (check 8).
+
+**Backend-down resilience (PR #5, verified):** with uvicorn stopped, the Vite proxy returns
+an empty `text/plain` 502 for `/api/*`. `apiFetch()` in `lib/api.js` treats any non-JSON
+response (or unreadable JSON body) as "backend unreachable", so the customer form shows the
+retry screen and the admin panel shows the offline screen — a fake ₹0/"paused" page or a
+silent empty login error can no longer be rendered from a proxy error (check 26).
 
 ---
 
 ## 4. What was fixed since the previous analysis ✔
 
-The merge of PR #4 resolved most of the previous report's findings:
+The merge of PR #5 (and PR #4 before it) resolved nearly all of the previous reports'
+findings:
 
 | Previous finding | Status now |
 |---|---|
 | ~2,000+ lines of dead Firebase/legacy frontend (pages, libs, rules, config) | **Deleted** — no `firebase` import anywhere, not in the production bundle (grep-verified), dependency removed |
-| Stored-XSS via uploads (filename/Content-Type trust) | **Fixed** — magic-byte sniffing, server-derived extension, PNG/JPEG/WebP whitelist, `nosniff` on all responses (attack now returns 400 — verified) |
-| Hard-coded default credentials could reach production | **Mitigated** — `APP_ENV=production` refuses to start without `ADMIN_EMAIL`/`ADMIN_PASSWORD`/`SESSION_SECRET`; password field no longer pre-filled |
+| Stored-XSS via uploads (filename/Content-Type trust) | **Fixed** — magic-byte sniffing, server-derived extension, PNG/JPEG/WebP whitelist, `nosniff` on all responses (attack now returns 400 — re-verified) |
+| Hard-coded default credentials could reach production | **Mitigated** — `APP_ENV=production` refuses to start without `ADMIN_EMAIL`/`ADMIN_PASSWORD`/`SESSION_SECRET` (verified); password field no longer pre-filled |
 | `/uploads` URLs break when frontend/backend hosted separately | **Fixed** — `assetUrl()` in `lib/api.js` prefixes `VITE_API_BASE_URL`, used by Dashboard + Detail |
-| Status-only PATCH could wipe admin notes | **Fixed** — server only overwrites notes when the field is actually sent (verified) |
-| Stale `dist` cached after redeploy | **Fixed** — `Cache-Control: no-cache` on index.html |
+| Status-only PATCH could wipe admin notes | **Fixed** — server only overwrites notes when the field is actually sent (re-verified) |
+| Stale `dist` cached after redeploy | **Fixed** — `Cache-Control: no-cache` on index.html (verified) |
 | Confusing offline vs. logged-out admin UX | **Fixed** — dedicated offline screen, 5 s auto-retry, "session expired" banner distinct from data-refresh failure |
-| Path traversal in SPA file serving | **Guarded** — resolved-path `relative_to()` check (verified `/uploads/../database.py` → 404) |
+| Path traversal in SPA file serving | **Guarded** — resolved-path `relative_to()` check (re-verified `/uploads/../database.py` → 404) |
+| Backend-down proxy 502 rendered a fake ₹0/paused page; empty login error | **Fixed in PR #5** — non-JSON responses are classified as "backend unreachable" with retry UI (verified at the HTTP level, §3.3) |
+| `PUT /api/admin/settings` 500 on non-numeric `cashbackAmount`; negative values accepted | **Fixed** — `int()` is wrapped in try/except → 400, and values are clamped to 1–10,000 → 400 outside range (re-verified check 13; the previous analysis listed this as an open bug — it no longer reproduces) |
+| **Preview admin 401**: login 200 but every follow-up admin call 401 (gateway/iframe strips/blocks the single auth channel) | **Fixed this session** — multi-channel auth: token kept in memory + localStorage + `mm_admin_token` cookie; sent as `Authorization: Bearer`, `X-Admin-Token`, `?admin_token=` and the cookie; backend `resolve_admin()` accepts all of them and logs which channels arrived on failure (checks 25–30) |
+| `AdminApp.logout()` throws unhandled when the backend is down (UI never resets) | **Fixed** — `api.logout()` wrapped in try/catch; the token is cleared in `api.logout`'s finally so the login screen always returns |
+| Vite silently shifts to 5174/5175 when 5173 is busy, breaking the proxy + docs | **Fixed** — `strictPort: true` on dev + preview (fails loudly instead); proxy target overridable via `VITE_BACKEND_URL` |
+| GitHub Pages workflow ignored `VITE_API_BASE_URL` (README/workflow drift) | **Fixed** — `deploy.yml` Build step now sets `env: VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}`; still needs the repo variable set + a real backend host |
 
 ---
 
 ## 5. Verified behavior (fresh smoke tests run during this analysis)
 
-Environment: Python 3.11.2, Node 22.22.3. All 28 checks passed except where noted.
+Environment: Python 3.11.2, Node 22.22.3, npm 10.9.8. Fresh DB seeded at first backend boot.
+All 28 check groups below passed exactly as noted.
 
 **Build/lint**
-1. `npm install`, `npx eslint .` → **clean**; `npm run build` → succeeds.
-2. Bundle: `index-*.js` 407.85 kB (129.50 kB gzip), lazy `AdminApp` chunk 36.28 kB
+1. `pip install -r backend/requirements.txt` → clean, pinned versions resolve.
+2. `npm install`, `npm run lint` (eslint) → **clean**; `npm run build` → succeeds.
+3. Bundle: main `index-*.js` 408.07 kB (129.57 kB gzip), lazy `AdminApp` chunk 36.28 kB
    (9.01 kB gzip), CSS 51.31 kB (9.59 kB gzip). No `firebase` string in the bundle.
 
 **Backend & API**
-3. Backend boots, creates + seeds `backend/mahalaxmi.db` (admin + settings singleton).
-4. `GET /api/health` → `{"ok":true}`; `GET /api/settings` → correct payload.
-5. Login: wrong password → 401 "Invalid email or password."; wrong email → 401 "This email
+4. Backend boots, creates + seeds `backend/mahalaxmi.db` (admin + settings singleton).
+5. `GET /api/health` → `{"ok":true}`; `GET /api/settings` → correct payload.
+6. Login: wrong password → 401 "Invalid email or password."; wrong email → 401 "This email
    is not allowed."; correct → session cookie + bearer token.
-6. `POST /api/submissions` (UPI variant and QR variant) → 200 with references
-   `MMC-2026-000001`, `MMC-2026-000002`.
-7. **XSS upload attempt** (HTML bytes, filename `.png`, `Content-Type: image/png`) →
-   **400 "Only PNG, JPEG or WebP images are accepted."** ✔ fix confirmed.
-8. 3-digit order id → 400; invalid UPI → 400.
-9. Admin list without auth → 401; with bearer token → both submissions.
-10. PATCH `approved` → stamps `approved_at`; notes-only PATCH → saves notes;
+7. `POST /api/submissions` — UPI+PNG → `MMC-2026-000001`; QR+JPEG → `MMC-2026-000002`;
+   WebP review → accepted (`MMC-2026-000003`).
+8. **XSS upload attempt** (HTML bytes, filename `.png`, `Content-Type: image/png`) →
+   **400 "Only PNG, JPEG or WebP images are accepted."** ✔
+9. 3-digit order id → 400; invalid UPI → 400; missing QR for `qr` method → 400;
+   1-char name → 400.
+10. Admin list without auth → 401; with bearer token → all submissions; with session
+    cookie only → same list (both auth channels work).
+11. Search `ravi` → 1 hit; `search=ravi&status=paid` → correct hit (LIKE search is
+    SQL-parameterized).
+12. PATCH `approved` → stamps `approved_at`; notes-only PATCH → saves notes, keeps status;
     **status-only PATCH to `paid` preserves existing notes**; invalid status → 400;
-    `rejected` + notes works. `paid_at`/`approved_at` stamped correctly.
-11. Search `ravi` → 1 hit; `status=paid` filter → 1 hit (LIKE search is SQL-parameterized).
-12. `/uploads/<file>` → `content-type: image/png` **and** `x-content-type-options: nosniff`.
-13. `/uploads/../database.py` (path traversal) → 404.
-14. `GET /api/admin/dashboard` → correct stats (endpoint works but no frontend calls it).
-15. Change-password with wrong current password → 400.
-16. Bearer token from before remains valid indefinitely (no expiry — see §6).
-17. **`PUT /api/admin/settings` with `cashbackAmount:"abc"` → HTTP 500** (unhandled
-    `ValueError`); **`cashbackAmount:-50` → accepted (200)** — server-side validation gap.
-18. SPA hosting: `/` serves the built `dist`; deep route `/some/deep/route` → 200 fallback;
-    `cache-control: no-cache` on index.
+    unknown id → 404. `paid_at` stamped correctly.
+13. `PUT /api/admin/settings` validation: `"abc"` → **400** "must be a number";
+    `-50` → **400** "between 1 and 10000"; `20000` → **400**; valid payload → saved and
+    re-read. (This is the previously-reported 500/negative-accept bug — **fixed**.)
+14. Change-password: wrong current password → 400; valid change → 200; old password then
+    fails login, new one works. Password restored to the documented default afterwards.
+15. **Bearer token issued before a password change remains valid afterwards; the session
+    cookie does too** (both re-verified against the changed-password DB — no revocation).
+16. Tampered/foreign tokens: garbage bearer → `auth/me` reports `authenticated:false`;
+    a token for a non-admin email with an invalid signature → 401 on admin endpoints.
+17. `/uploads/<file>` → correct `content-type` **and** `x-content-type-options: nosniff`.
+18. `/uploads/../database.py` and `/uploads/../../etc/passwd` (path traversal) → 404.
+19. `GET /api/admin/dashboard` → correct stats (endpoint works but no frontend calls it).
+20. SPA hosting: `/` serves the built `dist`; deep route `/some/deep/route` → 200 fallback;
+    `cache-control: no-cache` on index; missing `/api/*` route → JSON 404, not the SPA.
+21. Campaign pause: `campaignActive:false` → `POST /api/submissions` → 400 with the
+    pause message; resume → submissions accepted again.
+22. **Production fail-fast**: importing `database` or `main` with `APP_ENV=production` and
+    no `ADMIN_EMAIL`/`ADMIN_PASSWORD`/`SESSION_SECRET` raises `RuntimeError` — defaults are
+    disabled in production. ✔
+23. **Rate limiting**: 20 rapid bad-password logins all processed with no throttling —
+    none exists (§6.2).
+24. Token payload is signed, **not encrypted** — `{"id":1,"email":…}` is visible base64.
+
+**Frontend/dev-server chain**
+25. Vite dev server boots on 5173; serves the app; `/api/*` and `/uploads/*` proxy to the
+    backend correctly (verified via the proxy).
+26. **With the backend stopped**, the Vite proxy returns an empty `text/plain` 502 for
+    `/api/settings` and `/api/admin/submissions` — exactly the failure mode the PR #5
+    non-JSON detection guards against (the UI shows retry/offline screens instead of a
+    fake page).
+27. **Multi-channel auth (fix for the live-preview 401 bug) — all verified through the
+    Vite proxy:** admin list 200 via `Authorization: Bearer` / via `X-Admin-Token` only /
+    via `?admin_token=` query param only / via `mm_admin_token` cookie only / via session
+    cookie only. No auth → 401; garbage token via `X-Admin-Token` → 401.
+28. Failed-auth diagnostics: an unauthenticated admin request logs the INFO line
+    `Admin auth failed — authorization header: False, x-admin-token: False, …` so a
+    gateway stripping channels can be identified from the backend log alone.
+29. `npm run lint` → clean (after adding Node globals for `vite.config.js`); production
+    build succeeds (main 408.39 kB / 129.69 kB gzip, admin chunk 9.01 kB gzip).
+
+**GitHub state**
+30. Repo is **public**; Pages is enabled and last built from `main` via the Actions
+    workflow (4 successful deploys, one legacy branch build from PR #1's era).
+31. `deploy.yml` **now sets** `env: VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}` on
+    the Build step (§7.1) — but the repo variable still has to be created and a backend
+    host must exist for the deployed site to work. The Pages *source branch* setting still
+    points at the old
+    `arena/01a07d96-…` branch (stale legacy config) even though Actions deploys from
+    `main` now.
 
 ---
 
@@ -204,25 +278,33 @@ Environment: Python 3.11.2, Node 22.22.3. All 28 checks passed except where note
 
 1. **Public default credentials.** The repo (public) documents
    `team.duobits@gmail.com / aditya9922`, and dev-mode seeding uses them. Production mode
-   now requires env vars, but if the real deployment was ever seeded with these defaults,
+   requires env vars, but if the real deployment was ever seeded with these defaults,
    anyone reading GitHub can log in. **Action: change the password on the live system and
    treat the documented pair as compromised.** (Also note the token serializer salt is
    public knowledge if `SESSION_SECRET` ever fell back to the dev default.)
 
-2. **Admin tokens: no expiry, no revocation.** Bearer tokens are signed, **not encrypted**
-   (payload `{"id":1,"email":…}` is visible base64), never expire, and stay valid after a
-   password change (verified — check 15/16). Fix: add an expiry timestamp to the payload,
-   validate it in `resolve_admin()`, and include a password-generation marker so changing
-   the password invalidates outstanding tokens.
+2. **Admin tokens: no expiry, no revocation — and now multi-channel.** Bearer tokens are
+   signed, **not encrypted** (payload `{"id":1,"email":…}` is visible base64), never
+   expire, and stay valid after a password change — re-verified for both the bearer token
+   and the session cookie (checks 15, 24). Since this session the same token is ALSO
+   accepted from `X-Admin-Token`, the `?admin_token=` query parameter, and the
+   `mm_admin_token` cookie (needed to survive preview gateways that strip standard auth
+   channels — checks 27–28), which widens the exposure surface: the query-parameter copy
+   appears in the backend access log, and a leaked token from ANY channel is valid
+   forever. Fix: add an expiry timestamp to the payload, validate it in `resolve_admin()`,
+   and include a password-generation marker so changing the password invalidates
+   outstanding tokens. (Rotating `SESSION_SECRET` also invalidates all tokens at once.)
 
 3. **No rate limiting / brute-force protection.** `/api/auth/login` and
-   `POST /api/submissions` are unbounded. Once #1 is fixed this matters. A tiny in-memory
-   attempt counter (e.g. 10 tries / 15 min / IP) is enough for a single-host deployment.
+   `POST /api/submissions` are unbounded (20 rapid attempts processed unthrottled — check
+   23). Once #1 is fixed this matters. A tiny in-memory attempt counter (e.g. 10 tries /
+   15 min / IP) is enough for a single-host deployment.
 
-4. **Settings endpoint robustness (new finding).** `PUT /api/admin/settings` crashes with
-   500 on non-numeric `cashbackAmount` and accepts negative values. Fix: `int()` inside a
-   try/except → 400, and clamp to a sane range (1–10,000). A pydantic model for the body
-   would fix this class of bug.
+4. **Orphan upload on invalid submission (minor).** `create_submission()` writes the review
+   file to disk **before** validating the UPI id, and uploads are never deleted (not even
+   for rejected submissions). Combined with #3, an unauthenticated client can fill the
+   uploads disk with ≤8 MB images regardless of validation outcome. Fix: validate all form
+   fields before `save_upload()`, and add periodic garbage collection of unreferenced files.
 
 5. **Session cookie & CORS hardening for production.** `https_only=False` unconditionally
    (fine on plain-HTTP localhost, wrong behind TLS in prod — gate on `APP_ENV`); CORS
@@ -231,9 +313,13 @@ Environment: Python 3.11.2, Node 22.22.3. All 28 checks passed except where note
 
 6. **Minor:** `/api/settings` discloses the admin email (used by the login screen copy —
    accepted trade-off, but worth knowing); login email pre-filled from a hard-coded string
-   in `AdminApp.jsx` (should come from settings); change-password does not log out other
-   sessions; `@app.on_event("startup")` is deprecated in FastAPI (use a lifespan handler);
-   Google login accepts a raw `dict` without a pydantic model.
+   in `AdminApp.jsx` (should come from settings); distinct login errors enable email
+   enumeration (the allowed email is public anyway — accepted); change-password does not
+   log out other sessions (see #2); `AdminApp.logout()` throws unhandled when the backend
+   is down (the token is cleared but the UI state never resets — the next poll's
+   "session expired" banner covers it); `@app.on_event("startup")` is deprecated in
+   FastAPI (use a lifespan handler); Google login accepts a raw `dict` without a pydantic
+   model.
 
 **What's done right:** PBKDF2 with per-user salt and constant-time compare; single-admin
 email allowlist enforced server-side on both login paths; Google `aud` + `email_verified`
@@ -241,21 +327,21 @@ verification against Google's tokeninfo endpoint; magic-byte upload validation w
 whitelisted extensions; 8 MB server-side cap; `nosniff` globally; path-traversal guard on
 SPA file serving; SQL is fully parameterized (LIKE search included); customer endpoints
 never expose other customers' data; only last-4 order digits stored (good privacy instinct);
-uploads/db/.env gitignored.
+uploads/db/.env gitignored; production fail-fast on missing secrets.
 
 ---
 
 ## 7. Functional gaps & deployment readiness
 
-1. **The GitHub Pages deploy is broken by design (doc/workflow drift — new finding).**
-   README says the workflow "bakes in `VITE_API_BASE_URL` from a repository variable", but
-   `.github/workflows/deploy.yml` has **no `env:` block at all** — the build runs with an
-   empty API base, so the deployed site calls same-origin `/api` on `*.github.io`, where no
-   backend exists (exactly the "deployed page shows login errors" symptom the README
-   describes). Fix: add
-   `env: VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}` to the Build step, host the
-   backend somewhere (single VPS/container — SQLite + local uploads do not survive
-   ephemeral/serverless platforms), and set the repo variable.
+1. **The GitHub Pages deploy: workflow fixed, backend host still missing.** The workflow
+   now sets `env: VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}` on the Build step
+   (fixed this session — check 31), so the README claim is finally true. What remains:
+   create the `VITE_API_BASE_URL` repository variable (Settings → Secrets and variables →
+   Actions → Variables), host the backend somewhere (single VPS/container — SQLite + local
+   uploads do not survive ephemeral/serverless platforms) with `APP_ENV=production` +
+   secrets, and remove the stale Pages *source branch* setting pointing at
+   `arena/01a07d96-…` (check 31). Until then the deployed site still can only talk to a
+   backend on its own origin.
 
 2. **No tests and no backend CI.** Not one test in the repo; the only workflow deploys.
    The API is small and deterministic — a FastAPI `TestClient` smoke suite (login, submit,
@@ -269,17 +355,25 @@ uploads/db/.env gitignored.
    re-implementing server-side as the campaign grows.
 
 5. **`customer_comment` column still never collected.** Schema/API/admin serialization
-   support it; the form never sends it. Add the optional field or drop the column.
+   support it; the form never sends it (grep-verified). Add the optional field or drop the
+   column.
 
 6. **Offer copy is hard-coded.** "₹40 Flat OFF / above ₹499" appears 3× in
    `CustomerForm.jsx` and in `index.html` title + meta description (which also hard-codes
-   "₹15"). When settings change, the deployed page's SEO copy silently drifts.
+   "₹15"). When settings change, the deployed page's SEO copy silently drifts. (Demonstrated
+   during this run: changing the DB cashback amount leaves the built page still saying ₹15.)
 
-7. **Small leftovers:** unused `GET /api/admin/dashboard` endpoint; unused helpers
-   (`inspectQrImage`, `formatDate`, `timeAgo`, `formatDay`, `clamp`, `uid`, `slugDate` in
-   `lib/`); empty root `package-lock.json` stub with no root `package.json`; `Settings.jsx`
-   uses the render-time "adjust state when props change" pattern (legal but easy to get
-   wrong — an effect or key-remount would be more conventional).
+7. **Cashback-amount drift in the admin UI.** The Dashboard "paid ₹ total" and the Detail
+   cashback amount both use the **current** settings amount; no per-submission amount is
+   stored, so historical totals are wrong if the amount changes mid-campaign.
+
+8. **Small leftovers:** unused `GET /api/admin/dashboard` endpoint; unused helpers
+   (`inspectQrImage`, `timeAgo`, `formatDay`, `clamp`, `uid`, `slugDate` in `lib/` — note
+   `formatDate` *is* used by Dashboard/Detail, correcting the previous analysis); empty root
+   `package-lock.json` stub with no root `package.json`; `Settings.jsx` uses the render-time
+   "adjust state when props change" pattern (legal but easy to get wrong — an effect or
+   key-remount would be more conventional); `Login.jsx` re-initializes the Google button
+   whenever `busy` changes (harmless, slightly wasteful).
 
 ---
 
@@ -288,14 +382,16 @@ uploads/db/.env gitignored.
 **Before real traffic**
 1. Rotate the live admin password; confirm the deployed backend runs with
    `APP_ENV=production` + env secrets.
-2. Add token expiry + password-change revocation in `resolve_admin()`/`make_admin_token()`.
+2. Add token expiry + password-change revocation in `resolve_admin()`/`make_admin_token()`
+   (now more important: the same token is accepted over four channels — §6.2).
 3. Add login rate limiting (simple in-memory counter per IP).
-4. Fix `PUT /api/admin/settings` validation (pydantic model; reject non-numeric and
-   out-of-range amounts with 400).
+4. Validate submissions fully before writing uploads to disk; add orphan-file cleanup.
 
 **Deployment**
-5. Fix `deploy.yml` to pass `VITE_API_BASE_URL` from a repo variable; document the backend
-   host choice (single VPS/container); gate `https_only`/CORS on `APP_ENV=production`.
+5. ~~Fix `deploy.yml` to pass `VITE_API_BASE_URL`~~ (done this session). Now: create the
+   repo variable, choose and document the backend host (single VPS/container), gate
+   `https_only`/CORS on `APP_ENV=production`, and clean up the stale Pages source-branch
+   setting.
 
 **Quality**
 6. Add a FastAPI `TestClient` smoke suite + run lint & tests in GitHub Actions.
@@ -311,11 +407,14 @@ uploads/db/.env gitignored.
 
 **Backend**
 - `main.py` — all routes; production fail-fast for `SESSION_SECRET`; CORS; `nosniff`
-  middleware; `resolve_admin`/`require_admin` (bearer or session); `verify_google_token`;
-  `detect_image_extension` (magic bytes) + `save_upload`; submission create/list/get/patch
-  (notes-preserving); SPA static hosting with no-cache index.
+  middleware; `_token_from_request`/`resolve_admin`/`require_admin` (multi-channel token:
+  bearer / `X-Admin-Token` / `?admin_token=` / `mm_admin_token` cookie / session, with
+  failure diagnostics); `verify_google_token`; `detect_image_extension` (magic bytes) +
+  `save_upload`; submission create/list/get/patch (notes-preserving, validated status,
+  1–10,000 cashback clamp); SPA static hosting with no-cache index.
 - `database.py` — sqlite3 connection factory, schema, `ensure_column` migration helper,
-  idempotent admin/settings seeding (env-driven in production), `utc_now`, `row_to_dict`.
+  idempotent admin/settings seeding (env-driven in production, fail-fast otherwise),
+  `utc_now`, `row_to_dict`.
 - `security.py` — PBKDF2-SHA256 hash/verify (120k iterations, constant-time compare).
 
 **Frontend**
@@ -323,7 +422,8 @@ uploads/db/.env gitignored.
 - `pages/CustomerForm.jsx` — splash, hero, 3-step explainer, validation, dual upload
   (screenshot + optional QR), UPI/QR payout toggle, animated scroll FAB, error/retry states.
 - `pages/Success.jsx` — reference + copy + reset.
-- `pages/admin/AdminApp.jsx` — auth probe/offline-retry/polling state machine, shell, nav.
+- `pages/admin/AdminApp.jsx` — auth probe/offline-retry/polling state machine, shell, nav;
+  logout is backend-down safe (try/catch).
 - `pages/admin/Login.jsx` — password form + optional Google GIS button (script loader).
 - `pages/admin/Dashboard.jsx` — stats, filters, search, table (assetUrl-prefixed thumbnails).
 - `pages/admin/Detail.jsx` — full record, lightboxes, status actions, notes editor.
@@ -332,10 +432,13 @@ uploads/db/.env gitignored.
   ImageUpload (canvas compression + preview lifecycle), Lightbox/LightboxArea.
 - `components/admin.jsx` — StatCard, ImageCell. `components/FoodIcon.jsx` (inline SVG art),
   `FloatingFood.jsx` (ambient animation).
-- `lib/api.js` — fetch wrapper: bearer token, one-shot network retry, auth-401-only token
-  clearing, `assetUrl()` API-base prefixing, typed endpoint methods.
-- `lib/format.js` — money / UPI validation / date helpers (several unused — §7.7).
+- `lib/api.js` — fetch wrapper: multi-channel token (memory/localStorage/cookie stores;
+  Bearer + `X-Admin-Token` + `?admin_token=` + cookie send), one-shot network retry,
+  **non-JSON ⇒ backend-unreachable classification (PR #5)**, auth-401-only token clearing,
+  `assetUrl()` API-base prefixing, typed endpoint methods.
+- `lib/format.js` — money / UPI validation / date helpers (several unused — §7.8).
 - `lib/image.js` — canvas compression (1600px/q0.82); `inspectQrImage` currently unused.
 - `lib/status.js` — status pill metadata. `lib/adminRoute.js` — `/admin` constant.
 - `index.css` — Tailwind 4 `@theme` (brand/cocoa/gold palette, shadows, keyframes).
-- `vite.config.js` — dev proxy `/api` + `/uploads` → 127.0.0.1:8000, `allowedHosts: true`.
+- `vite.config.js` — dev proxy `/api` + `/uploads` → `VITE_BACKEND_URL` (default
+  127.0.0.1:8000), `strictPort: true`, `host`/`allowedHosts` open for preview environments.
