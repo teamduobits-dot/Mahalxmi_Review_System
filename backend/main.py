@@ -324,6 +324,39 @@ async def create_submission(
     }
 
 
+@app.get("/api/submissions/status/{reference}")
+def get_submission_status(reference: str) -> dict:
+    """Public, privacy-safe status lookup by reference ID.
+
+    Lets a customer track their claim from the status page. Deliberately returns
+    only non-sensitive fields — no name, UPI ID, screenshots, or admin notes —
+    so a leaked (or guessed) reference reveals nothing about payout details.
+    """
+    ref = reference.strip().upper()
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT reference, status, created_at, updated_at, approved_at, paid_at
+            FROM submissions WHERE UPPER(reference) = ?
+            """,
+            (ref,),
+        ).fetchone()
+    submission = row_to_dict(row)
+    if not submission:
+        raise HTTPException(
+            status_code=404,
+            detail="No submission found with this reference. Please check the reference ID and try again.",
+        )
+    return {
+        "reference": submission["reference"],
+        "status": submission["status"],
+        "createdAt": submission["created_at"],
+        "updatedAt": submission["updated_at"],
+        "approvedAt": submission["approved_at"],
+        "paidAt": submission["paid_at"],
+    }
+
+
 @app.post("/api/auth/login")
 def login(request: Request, email: str = Form(...), password: str = Form(...)) -> dict:
     normalized = email.strip().lower()

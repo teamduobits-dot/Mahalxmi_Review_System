@@ -1,6 +1,8 @@
 import { lazy, Suspense } from 'react'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import CustomerForm from './pages/CustomerForm'
+import Success from './pages/Success'
+import Status from './pages/Status'
 import { ADMIN_ROUTE } from './lib/adminRoute'
 
 const AdminApp = lazy(() => import('./pages/admin/AdminApp'))
@@ -18,6 +20,8 @@ export default function App() {
     <HashRouter>
       <Routes>
         <Route path="/" element={<CustomerForm />} />
+        <Route path="/success" element={<Success />} />
+        <Route path="/status" element={<Status />} />
         <Route
           path={`${ADMIN_ROUTE}/*`}
           element={

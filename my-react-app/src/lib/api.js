@@ -151,6 +151,9 @@ export const api = {
       body: formData,
     }),
 
+  getSubmissionStatus: (reference) =>
+    apiFetch(`/api/submissions/status/${encodeURIComponent(reference)}`),
+
   login: async (email, password) => {
     const form = new FormData()
     form.set('email', email)

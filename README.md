@@ -11,8 +11,14 @@ Customers only need to:
 - enter the last 4 digits of their Order ID
 - provide a UPI ID **or** upload a UPI QR image
 
+After submitting, they land on a dedicated animated success page ("your cashback is
+on its way") and can later **track their cashback status** with the reference ID
+at `/#/status` (public, no login — via `GET /api/submissions/status/{reference}`,
+which never exposes name, UPI, or screenshots).
+
 ### Admin side
-Admin can:
+The admin panel is reached **only** by its URL (`/#/admin`) — the customer page
+intentionally shows no admin link. Admin can:
 - log in with the allowed email only
 - view all submissions in a dashboard
 - open each submission in detail
