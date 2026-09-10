@@ -28,9 +28,10 @@ function loadGoogleScript() {
   })
 }
 
-export default function Login({ defaultEmail, onLogin, onGoogleLogin, error }) {
-  // Never pre-fill the password — the default is documented, not baked into UI.
-  const [email, setEmail] = useState(defaultEmail || 'team.duobits@gmail.com')
+export default function Login({ onLogin, onGoogleLogin, error }) {
+  // The admin email is never pre-filled and never shown — the login form must
+  // not reveal which account is allowed to sign in.
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [googleError, setGoogleError] = useState('')
@@ -81,6 +82,9 @@ export default function Login({ defaultEmail, onLogin, onGoogleLogin, error }) {
   const submit = async (event) => {
     event.preventDefault()
     if (busy) return
+    if (!email.trim() || !password) {
+      return
+    }
     setBusy(true)
     try {
       await onLogin(email.trim(), password)
@@ -103,7 +107,7 @@ export default function Login({ defaultEmail, onLogin, onGoogleLogin, error }) {
           <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 text-2xl shadow-pop">🍔</span>
           <div>
             <h1 className="font-display text-xl font-extrabold tracking-tight text-cream-50">Admin login</h1>
-            <p className="text-xs font-semibold text-cream-200/60">Only {defaultEmail || 'team.duobits@gmail.com'} is allowed</p>
+            <p className="text-xs font-semibold text-cream-200/60">Only the registered admin account is allowed</p>
           </div>
         </div>
 
@@ -137,6 +141,8 @@ export default function Login({ defaultEmail, onLogin, onGoogleLogin, error }) {
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
+                autoComplete="username"
+                placeholder="Enter admin email"
                 className="w-full rounded-2xl border border-white/10 bg-white/[0.07] py-3.5 pl-11 pr-4 text-sm font-semibold text-cream-50 outline-none transition placeholder:text-cream-200/30 focus:border-brand-400 focus:ring-4 focus:ring-brand-500/20"
               />
             </div>
@@ -149,6 +155,8 @@ export default function Login({ defaultEmail, onLogin, onGoogleLogin, error }) {
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                placeholder="Enter admin password"
                 className="w-full rounded-2xl border border-white/10 bg-white/[0.07] py-3.5 pl-11 pr-4 text-sm font-semibold text-cream-50 outline-none transition placeholder:text-cream-200/30 focus:border-brand-400 focus:ring-4 focus:ring-brand-500/20"
               />
             </div>

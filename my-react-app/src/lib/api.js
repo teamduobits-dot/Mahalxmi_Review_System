@@ -104,8 +104,10 @@ async function apiFetch(path, options = {}) {
 
   // Last-resort channel for admin data calls: carry the token in the query
   // string so auth survives even when every header and cookie is stripped.
+  // DEV ONLY — in production the backend rejects URL tokens (they leak into
+  // access logs), so the built app never appends them.
   let target = `${API_BASE}${path}`
-  if (token && path.startsWith('/api/admin')) {
+  if (token && import.meta.env.DEV && path.startsWith('/api/admin')) {
     const sep = target.includes('?') ? '&' : '?'
     target += `${sep}admin_token=${encodeURIComponent(token)}`
   }
@@ -183,11 +185,15 @@ export const api = {
 
   me: () => apiFetch('/api/auth/me'),
 
-  changePassword: (currentPassword, newPassword) => {
+  changePassword: async (currentPassword, newPassword) => {
     const form = new FormData()
     form.set('currentPassword', currentPassword)
     form.set('newPassword', newPassword)
-    return apiFetch('/api/auth/change-password', { method: 'POST', body: form })
+    const data = await apiFetch('/api/auth/change-password', { method: 'POST', body: form })
+    // The backend invalidates every outstanding token on a password change and
+    // returns a fresh one — keep the current tab logged in with it.
+    if (data?.token) setToken(data.token)
+    return data
   },
 
   getAdminSettings: () => apiFetch('/api/admin/settings'),
@@ -210,4 +216,10 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }),
+
+  deleteSubmission: (id) => apiFetch(`/api/admin/submissions/${id}`, { method: 'DELETE' }),
+
+  getStorage: () => apiFetch('/api/admin/storage'),
+
+  cleanupStorage: () => apiFetch('/api/admin/storage/cleanup', { method: 'POST' }),
 }

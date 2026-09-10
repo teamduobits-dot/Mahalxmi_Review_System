@@ -21,7 +21,9 @@ export function formatDateTime(ts) {
 
 export function timeAgo(ts) {
   if (!ts) return '—'
-  const diff = Date.now() - ts
+  const time = typeof ts === 'number' ? ts : new Date(ts).getTime()
+  if (Number.isNaN(time)) return '—'
+  const diff = Date.now() - time
   const m = Math.floor(diff / 60000)
   if (m < 1) return 'just now'
   if (m < 60) return `${m} min ago`
@@ -30,6 +32,17 @@ export function timeAgo(ts) {
   const d = Math.floor(h / 24)
   if (d === 1) return 'yesterday'
   return `${d} days ago`
+}
+
+// Human-readable storage sizes: formatBytes(1536) → "1.5 KB"
+export function formatBytes(bytes) {
+  const n = Number(bytes || 0)
+  if (n <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const index = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1)
+  const value = n / 1024 ** index
+  const rounded = value >= 100 || index === 0 ? Math.round(value) : Math.round(value * 10) / 10
+  return `${rounded} ${units[index]}`
 }
 
 export function formatDay(ts) {

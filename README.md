@@ -19,13 +19,18 @@ which never exposes name, UPI, or screenshots).
 ### Admin side
 The admin panel is reached **only** by its URL (`/#/admin`) — the customer page
 intentionally shows no admin link. Admin can:
-- log in with the allowed email only
+- log in with the allowed admin email **typed manually** (the email is never
+  pre-filled or revealed anywhere in the app)
 - view all submissions in a dashboard
 - open each submission in detail
 - approve, reject, or mark paid
 - save admin notes
+- **permanently delete any submission** (row + its uploaded screenshot/QR files)
+- **track upload storage usage** (review screenshots vs QR images vs orphan
+  files, quota bar on the dashboard + a dedicated Storage page with orphan
+  cleanup and an editable quota in Settings)
 - update customer-facing settings
-- change the admin password
+- change the admin password (invalidates all other sessions/tokens)
 
 ## Stack
 - **Frontend:** React + Vite + Tailwind CSS
@@ -37,12 +42,20 @@ intentionally shows no admin link. Admin can:
 - **Email:** `team.duobits@gmail.com`
 - **Password:** `aditya9922`
 
-You can change the password from the admin settings screen.
+You can change the password from the admin settings screen. **Changing it
+invalidates every outstanding admin token and session** (except the current
+tab, which receives a fresh token).
 
 **Production:** run the backend with `APP_ENV=production` plus `ADMIN_EMAIL`,
-`ADMIN_PASSWORD` and `SESSION_SECRET` set as environment variables. In that
-mode all hard-coded defaults are disabled and the server refuses to start if
-any of them is missing — never deploy with the default password.
+`ADMIN_PASSWORD` and `SESSION_SECRET` set as environment variables (or in a
+`backend/.env` file — see `backend/.env.example`). In that mode all hard-coded
+defaults are disabled and the server refuses to start if any of them is
+missing — never deploy with the default password. In production the login
+errors are generic (no account enumeration), admin tokens expire
+(`ADMIN_TOKEN_TTL_HOURS`, default 24 h), the URL-token auth channel is
+disabled, `https_only` sessions + HSTS + CSP are enforced, CORS is restricted
+to `CORS_ORIGINS` (set it to your Firebase Hosting domain), and login +
+submission endpoints are rate-limited.
 
 ## Local setup (quick start)
 
@@ -88,34 +101,65 @@ First start creates and seeds `backend/mahalaxmi.db` (admin + settings) automati
 > silently shifting to `5174`/`8001` and breaking the proxy + docs. Kill whatever holds
 > the port (`netstat -ano | findstr :5173` on Windows) and restart.
 
-## Notes for later cloud deployment
-The frontend uses relative `/api` and `/uploads` paths in local dev through Vite proxy.
-For cloud deployment later, set `VITE_API_BASE_URL` to your backend URL — image
-URLs (`/uploads/...`) are automatically prefixed with it by the frontend, so a
-separately-hosted backend works out of the box.
+## Notes for cloud deployment (Firebase recommended)
 
-The GitHub Pages deploy (`.github/workflows/deploy.yml`) bakes in
-`VITE_API_BASE_URL` from a **repository variable** of the same name
-(Settings → Secrets and variables → Actions → Variables). Until you set it, the deployed
-site can only talk to a backend on its own origin — that is why a deployed
-page with no backend URL shows login errors while the local app works.
+The frontend is a static bundle and is designed to be hosted on **Firebase
+Hosting**; the backend (FastAPI + SQLite + local uploads) must run on a single
+always-on host (VPS/container) — SQLite + local disk do not survive
+ephemeral/serverless platforms.
 
-Start the backend with `APP_ENV=production`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` and
-`SESSION_SECRET` set (see above). SQLite + local disk uploads are meant for a
-single always-on host (VPS/container), not ephemeral/serverless platforms.
+**Deploy the frontend to Firebase Hosting:**
 
-**Admin auth is multi-channel on purpose.** The login response returns a signed bearer
-token, and the frontend keeps it in localStorage (+ an in-memory fallback and a
-first-party cookie) and sends it on every admin request as `Authorization: Bearer`,
-`X-Admin-Token`, a `?admin_token=` query parameter, and the `mm_admin_token` cookie —
-whichever of these survives the hosting/proxy environment wins. This keeps the admin
-panel working behind preview gateways and proxies that strip headers or block storage
-(e.g. sandboxed preview iframes). Note the query-parameter copy does appear in the
-backend's access log; rotate `SESSION_SECRET` to invalidate all outstanding tokens.
+```bash
+cd my-react-app
+VITE_API_BASE_URL=https://your-backend-host.com npm run build
+cd ..
+npx firebase deploy --only hosting
+```
+
+The root `firebase.json` is preconfigured: it serves `my-react-app/dist`,
+sets `Cache-Control: no-cache` on `index.html`, long-caches the hashed
+assets, and rewrites all routes to the SPA entry. Steps once:
+
+1. `npm i -g firebase-tools` (or use `npx firebase-tools`)
+2. `firebase login` then `firebase init hosting` (accept the existing
+   `firebase.json`, choose the Firebase project, and set the public dir to
+   `my-react-app/dist`)
+3. `firebase deploy --only hosting`
+
+**Point the deployed site at the backend** by building with
+`VITE_API_BASE_URL` set to your backend origin (image URLs `/uploads/...` are
+prefixed automatically). The GitHub Pages workflow
+(`.github/workflows/deploy.yml`) does the same via the `VITE_API_BASE_URL`
+repository variable.
+
+**Run the backend in production:**
+
+```bash
+cd backend
+cp .env.example .env   # then edit: APP_ENV=production, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET
+APP_ENV=production ../.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+`backend/.env` is loaded automatically at startup (real env vars win) and is
+gitignored. Set `CORS_ORIGINS=https://your-project.web.app` so only your
+Firebase domain can call the API from the browser. Put the backend behind
+HTTPS (Caddy/nginx) — production mode enforces secure session cookies and
+HSTS.
+
+> In production the token is sent only via headers/cookie (`?admin_token=`
+> URLs are rejected by the backend and never emitted by the built frontend),
+> login errors are generic, and password change revokes all other tokens.
 
 ## Operational notes
 - **Always use the Vite dev URL (port 5173) for the UI in local dev.** Port 8000
   serves the *built* `dist/` snapshot, which can be stale.
+- **Rate limits:** login 10 attempts / 15 min / IP; submissions 20 / hour / IP
+  (per IP seen by the server). A 429 means wait and retry.
+- **Storage:** uploaded screenshots + QR images live in `backend/uploads/`. The
+  admin dashboard bar and the Storage page track usage against the quota
+  (default 1024 MB, editable in Settings). Deleting a submission frees its
+  files permanently.
 - **A fresh database shows an empty dashboard — that is normal, not an error.**
   New customer submissions appear in the admin table automatically.
 - If the UI shows values that differ from `curl http://127.0.0.1:8000/api/settings`,

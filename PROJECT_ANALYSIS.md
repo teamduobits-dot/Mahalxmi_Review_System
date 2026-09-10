@@ -4,6 +4,77 @@
 
 ---
 
+## 0. Session update — 2026-09-11 (this branch, not yet merged)
+
+A new feature/security session on `arena/01a08cdb-mahalxmi-review-system` changed
+the system substantially. Everything below §0 describes the **pre-session** state;
+where this section conflicts with the rest of the document, this section wins.
+
+**New features (admin panel)**
+1. **Storage tracking & management.**
+   - `GET /api/admin/storage` — disk usage of `backend/uploads/`: used/total bytes,
+     review-screenshot vs QR breakdown, orphan-file count (files no submission
+     references), quota bytes/MB, `usedPercent`, `overQuota`.
+   - **Dashboard** shows a storage bar card (green → amber at 70% → red at 90%,
+     over-quota warning) above the table.
+   - New **Storage page** (`/#/admin/storage`, sidebar nav item): big quota bar,
+     4 stat tiles, orphan-file cleanup button (`POST /api/admin/storage/cleanup`,
+     removes only unreferenced files), refresh.
+   - **Settings** gains a storage quota field (10–102,400 MB; new
+     `app_settings.storage_quota_mb` column, default 1024, auto-migrated).
+2. **Permanent delete for every submission.**
+   - `DELETE /api/admin/submissions/{id}` removes the DB row AND its uploaded
+     screenshot/QR files, and returns the freed size.
+   - Dashboard table has a per-row **Delete** button (confirm dialog + spinner);
+     the Detail page has a **Delete permanently** button in Admin actions.
+3. **Login email no longer pre-filled/revealed.** `Login.jsx` starts with an empty
+   email field and generic "only the registered admin account is allowed" copy;
+   `/api/settings` no longer exposes `adminEmail`; the backend returns ONE generic
+   message for bad email / bad password / unknown account (no enumeration).
+
+**Production hardening (all verified — see smoke tests)**
+- **Admin tokens expire** (`exp` claim, `ADMIN_TOKEN_TTL_HOURS`, default 24 h) and
+  **password change revokes all outstanding tokens/sessions** via a per-admin
+  `token_version` (schema-migrated); the current tab gets a fresh token in the
+  change-password response. Session cookies and session-store entries are
+  version-checked too.
+- **Rate limiting:** login 10 tries / 15 min / IP, submissions 20 / hour / IP
+  (in-memory sliding window, `X-Forwarded-For` aware). Verified 429.
+- **URL-token channel disabled in production:** backend rejects `?admin_token=`
+  when `APP_ENV=production` (tokens in URLs leak to logs); the built frontend
+  never appends it (`import.meta.env.DEV` gate). Headers/cookie channels remain.
+- **Production response headers:** `Strict-Transport-Security` on every response,
+  CSP on served HTML (scripts self, fonts Google, connect self + Google tokeninfo,
+  frame accounts.google.com). Dev gets a mirror-image CSP via Vite headers so
+  CSP breakage shows up locally.
+- **CORS restricted in production** to explicit `CORS_ORIGINS` (comma-separated;
+  empty = same-origin only). The e2b.app regex now only applies in dev.
+- **Session cookie:** `https_only=True` in production; `max_age=86400`.
+- **Validation-before-write:** all form fields (UPI/QR included) are validated
+  BEFORE any file is written to disk; a DB failure after write unlinks the new
+  files — invalid submissions can no longer create orphan uploads.
+- `backend/.env` support (loaded at import; real env wins) +
+  `backend/.env.example`; production fail-fast unchanged.
+- **Firebase deployment:** root `firebase.json` (hosting: `my-react-app/dist`,
+  no-cache index, immutable hashed assets, SPA rewrites); README deployment
+  section rewritten for Firebase Hosting + backend on a VPS/container.
+  `deploy.yml` now really bakes `VITE_API_BASE_URL` from the repo variable
+  (fixes the long-standing doc/workflow drift noted in §7.1).
+- Dormant `timeAgo()` bug fixed (ISO string vs epoch math); `formatBytes()` added.
+
+**Verified this session (fresh env):** 20/20 backend smoke checks (health, no-email
+settings, generic login errors, token issuance, validation-before-write orphan
+check, 2 submissions, storage stats, auth-gated storage, delete frees row+files,
+cleanup, login 429, password-change revocation + restore, expired-token 401,
+tampered-token 401, quota update, privacy-safe public status, search) and 10/10
+production-mode checks (fail-fast ×2, HSTS, no adminEmail, generic errors, login,
+query-token rejected, bearer accepted, CORS allow/deny, X-Admin-Token channel,
+CSP). Frontend: `eslint` clean, `vite build` clean.
+
+---
+
+
+
 ## 1. Executive summary
 
 This repository is a **review-for-cashback campaign tool** for **Mahalaxmi Multi Cuisine**
