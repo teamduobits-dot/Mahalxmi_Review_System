@@ -175,7 +175,7 @@ export function ImageUpload({
               <Trash2 size={16} />
             </button>
           </div>
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 to-transparent p-3 text-xs font-bold text-white">
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 to-transparent p-3 text-xs font-bold text-white sm:text-sm">
             {value.fileName || 'Image selected'}
           </div>
         </div>
@@ -189,12 +189,12 @@ export function ImageUpload({
           <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-brand-500 shadow-soft transition group-hover:scale-110">
             {busy ? <Spinner className="text-brand-500" /> : <ImagePlus size={26} />}
           </span>
-          <span className="text-sm font-bold text-cocoa-800">{busy ? 'Processing image...' : label}</span>
-          <span className="text-xs text-cocoa-400">{hint}</span>
+          <span className="text-sm font-bold text-cocoa-800 sm:text-base">{busy ? 'Processing image...' : label}</span>
+          <span className="text-xs text-cocoa-400 sm:text-sm">{hint}</span>
         </button>
       )}
 
-      {error && <p className="mt-2 text-xs font-semibold text-red-600">{error}</p>}
+      {error && <p className="mt-2 text-xs font-semibold text-red-600 sm:text-sm">{error}</p>}
     </div>
   )
 }
