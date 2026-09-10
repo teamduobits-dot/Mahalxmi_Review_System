@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { IndianRupee, Lock, Save, Store } from 'lucide-react'
+import { HardDrive, IndianRupee, Lock, Save, Store } from 'lucide-react'
 import { ErrorBox, SectionCard, Spinner } from '../../components/ui'
 import { api } from '../../lib/api'
 
@@ -89,6 +89,16 @@ export default function Settings({ settings, onSaved }) {
               <IndianRupee size={15} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-cocoa-300" />
               <input type="number" min={1} value={form.cashbackAmount} onChange={(event) => setField({ cashbackAmount: Math.max(1, Number(event.target.value) || 1) })} className={`${inputClass} pl-10`} />
             </div>
+          </div>
+          <div>
+            <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Upload storage quota (MB)</label>
+            <div className="relative">
+              <HardDrive size={15} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-cocoa-300" />
+              <input type="number" min={10} value={form.storageQuotaMb ?? 1024} onChange={(event) => setField({ storageQuotaMb: Math.max(10, Number(event.target.value) || 10) })} className={`${inputClass} pl-10`} />
+            </div>
+            <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400">
+              Maximum disk space for uploaded screenshots and QR images. See the Storage page for current usage.
+            </p>
           </div>
           <div className="sm:col-span-2">
             <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500">Success note</label>

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
@@ -29,15 +32,28 @@ logger.setLevel(logging.INFO)
 
 ALLOWED_STATUSES = {"pending", "approved", "paid", "rejected"}
 
+# ---------------------------------------------------------------------------
+# Environment & production gating
+# ---------------------------------------------------------------------------
+_APP_ENV = os.getenv("APP_ENV", "").strip().lower()
+IS_PRODUCTION = _APP_ENV == "production"
 # The signing secret must come from the environment in production — with the
 # hard-coded fallback, anyone could mint a valid admin token.
-_APP_ENV = os.getenv("APP_ENV", "").strip().lower()
-if _APP_ENV == "production" and not os.getenv("SESSION_SECRET", "").strip():
+if IS_PRODUCTION and not os.getenv("SESSION_SECRET", "").strip():
     raise RuntimeError(
         "SESSION_SECRET must be set as an environment variable when APP_ENV=production. "
         "The default local secret is disabled in production."
     )
 SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or "mahalaxmi-local-secret"
+
+# Admin bearer tokens expire after ADMIN_TOKEN_TTL_HOURS (default 24 h).
+# Changing the password additionally invalidates all outstanding tokens
+# immediately via the per-admin `token_version` (see change_password).
+try:
+    ADMIN_TOKEN_TTL_SECONDS = max(3600, int(os.getenv("ADMIN_TOKEN_TTL_HOURS", "24")) * 3600)
+except ValueError:
+    ADMIN_TOKEN_TTL_SECONDS = 24 * 3600
+
 GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or os.getenv("VITE_GOOGLE_CLIENT_ID") or "").strip()
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BACKEND_DIR.parent
@@ -45,61 +61,146 @@ FRONTEND_DIST_DIR = PROJECT_DIR / "my-react-app" / "dist"
 FRONTEND_INDEX = FRONTEND_DIST_DIR / "index.html"
 token_serializer = URLSafeSerializer(SESSION_SECRET, salt="admin-token")
 
+# CORS: dev allows the local Vite origins + preview hosts; production allows
+# ONLY the origins listed in CORS_ORIGINS (comma-separated, e.g. your Firebase
+# Hosting domain). An empty list = same-origin only.
+_cors_env = os.getenv("CORS_ORIGINS", "")
+if IS_PRODUCTION:
+    _CORS_ORIGINS = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
+    _CORS_REGEX = None
+else:
+    _CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    _CORS_REGEX = r"https://.*\.e2b\.app"
+
 app = FastAPI(title="Mahalaxmi Review Cashback API")
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET,
     same_site="lax",
-    https_only=False,
+    https_only=IS_PRODUCTION,
+    max_age=86400,
 )
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_origin_regex=r"https://.*\.e2b\.app",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_cors_kwargs = {
+    "allow_origins": _CORS_ORIGINS,
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+if _CORS_REGEX:
+    _cors_kwargs["allow_origin_regex"] = _CORS_REGEX
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+# ---------------------------------------------------------------------------
+# Rate limiting (in-memory sliding window — designed for a single-process host)
+# ---------------------------------------------------------------------------
+LOGIN_RATE_LIMIT = 10
+LOGIN_RATE_WINDOW_SECONDS = 15 * 60
+SUBMIT_RATE_LIMIT = 20
+SUBMIT_RATE_WINDOW_SECONDS = 60 * 60
+
+
+class SlidingWindowRateLimiter:
+    def __init__(self) -> None:
+        self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def check(self, key: str, limit: int, window_seconds: int) -> None:
+        now = time.monotonic()
+        with self._lock:
+            hits = self._hits[key]
+            while hits and now - hits[0] > window_seconds:
+                hits.popleft()
+            if len(hits) >= limit:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many attempts. Please wait a few minutes and try again.",
+                )
+            hits.append(now)
+            if len(self._hits) > 10_000:  # prune idle keys so memory stays bounded
+                for stale_key in [key for key, value in self._hits.items() if not value]:
+                    del self._hits[stale_key]
+
+
+login_limiter = SlidingWindowRateLimiter()
+submit_limiter = SlidingWindowRateLimiter()
+
+
+def client_ip(request: Request) -> str:
+    # Behind a reverse proxy (nginx, Firebase, Render, …) the real client is in
+    # X-Forwarded-For; fall back to the socket address for direct connections.
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
 
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    if IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
 
-def public_settings_payload() -> dict:
+# ---------------------------------------------------------------------------
+# Settings payloads
+# ---------------------------------------------------------------------------
+def _settings_row() -> dict:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM app_settings WHERE id = 1").fetchone()
-    data = row_to_dict(row) or {}
+    return row_to_dict(row) or {}
+
+
+def _public_settings_from(data: dict) -> dict:
+    # Note: the admin email is deliberately NOT included — the login screen
+    # must never reveal which account is allowed to sign in.
     return {
         "businessName": data.get("business_name", "Mahalaxmi Multi Cuisine"),
         "cashbackAmount": data.get("cashback_amount", 15),
         "campaignActive": bool(data.get("campaign_active", 1)),
         "pauseMessage": data.get("pause_message", "Cashback submissions are paused right now."),
         "successNote": data.get("success_note", "Cashback will be checked and processed after review."),
-        "adminEmail": DEFAULT_ADMIN_EMAIL,
         "googleAuthEnabled": bool(GOOGLE_CLIENT_ID),
     }
 
 
+def public_settings_payload() -> dict:
+    return _public_settings_from(_settings_row())
+
+
+def admin_settings_payload() -> dict:
+    data = _settings_row()
+    payload = _public_settings_from(data)
+    payload["storageQuotaMb"] = int(data.get("storage_quota_mb", 1024))
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+def _load_admin_row(email: str) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (email,)).fetchone()
+    return row_to_dict(row)
+
+
 def admin_session_payload(email: str) -> dict:
     normalized = email.strip().lower()
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (normalized,)).fetchone()
-    admin = row_to_dict(row)
+    admin = _load_admin_row(normalized)
     if not admin:
         raise HTTPException(status_code=401, detail="Admin account not found.")
-    return {"id": admin["id"], "email": admin["email"]}
+    return {"id": admin["id"], "email": admin["email"], "v": int(admin["token_version"])}
 
 
 def make_admin_token(admin: dict) -> str:
-    return token_serializer.dumps({"id": admin["id"], "email": admin["email"]})
+    return token_serializer.dumps(
+        {
+            "id": admin["id"],
+            "email": admin["email"],
+            "v": int(admin.get("v") or 0),
+            "exp": time.time() + ADMIN_TOKEN_TTL_SECONDS,
+        }
+    )
 
 
 def _token_from_request(request: Request) -> str:
@@ -114,6 +215,9 @@ def _token_from_request(request: Request) -> str:
       2. X-Admin-Token: <token>          (survives gateways that drop Authorization)
       3. ?admin_token=<token>            (last resort — survives everything)
       4. mm_admin_token cookie           (first-party fallback store set by the frontend)
+
+    In production the query-parameter channel is disabled: tokens in URLs end
+    up in access logs, so they must never be accepted there.
     """
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
@@ -123,9 +227,10 @@ def _token_from_request(request: Request) -> str:
     x_token = request.headers.get("x-admin-token", "").strip()
     if x_token:
         return x_token
-    query_token = request.query_params.get("admin_token", "").strip()
-    if query_token:
-        return query_token
+    if not IS_PRODUCTION:
+        query_token = request.query_params.get("admin_token", "").strip()
+        if query_token:
+            return query_token
     return (request.cookies.get("mm_admin_token") or "").strip()
 
 
@@ -136,14 +241,29 @@ def resolve_admin(request: Request) -> dict | None:
             payload = token_serializer.loads(token)
             email = str(payload.get("email", "")).strip().lower()
             admin_id = int(payload.get("id", 0))
-            if email == DEFAULT_ADMIN_EMAIL and admin_id > 0:
-                return {"id": admin_id, "email": email}
+            version = int(payload.get("v", 0))
+            expires = float(payload.get("exp", 0))
+            if expires <= time.time():
+                logger.warning("Admin auth rejected: token expired")
+                return None
+            admin = _load_admin_row(email)
+            if admin and admin["id"] == admin_id and int(admin["token_version"]) == version:
+                return {"id": admin["id"], "email": admin["email"], "v": version}
+            logger.warning("Admin auth rejected: token no longer valid (password changed or account mismatch)")
         except (BadSignature, ValueError, TypeError):
             logger.warning("Admin auth rejected: token failed signature validation")
+        return None
 
-    admin = request.session.get("admin")
-    if admin and str(admin.get("email", "")).strip().lower() == DEFAULT_ADMIN_EMAIL:
-        return admin
+    session_admin = request.session.get("admin")
+    if session_admin and isinstance(session_admin, dict):
+        email = str(session_admin.get("email", "")).strip().lower()
+        admin = _load_admin_row(email)
+        if (
+            admin
+            and int(session_admin.get("id", 0)) == admin["id"]
+            and int(session_admin.get("v", 0)) == int(admin["token_version"])
+        ):
+            return {"id": admin["id"], "email": admin["email"], "v": int(admin["token_version"])}
     return None
 
 
@@ -195,6 +315,9 @@ def verify_google_token(credential: str) -> dict:
     return admin_session_payload(email)
 
 
+# ---------------------------------------------------------------------------
+# Upload helpers
+# ---------------------------------------------------------------------------
 def detect_image_extension(content: bytes) -> str | None:
     """Identify the image type from the file's actual bytes (magic numbers).
 
@@ -230,6 +353,93 @@ async def save_upload(file: UploadFile, prefix: str) -> str:
     return f"/uploads/{name}"
 
 
+def _upload_name_from_url(url_path: str | None) -> str | None:
+    """Extract a safe file name from a stored `/uploads/<name>` path."""
+    if not url_path:
+        return None
+    name = url_path.rsplit("/", 1)[-1]
+    if (
+        not name
+        or name in {"", ".", ".."}
+        or name.startswith(".")
+        or "/" in name
+        or "\\" in name
+    ):
+        return None
+    return name
+
+
+def _delete_upload_file(url_path: str | None) -> None:
+    name = _upload_name_from_url(url_path)
+    if not name:
+        return
+    target = (UPLOADS_DIR / name).resolve()
+    try:
+        target.relative_to(UPLOADS_DIR.resolve())
+    except ValueError:
+        return
+    if target.is_file():
+        try:
+            target.unlink()
+        except OSError:
+            logger.warning("Could not delete upload file %s", target)
+
+
+def _submission_upload_paths() -> set[str]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT review_screenshot_path, upi_qr_path FROM submissions").fetchall()
+    paths: set[str] = set()
+    for row in rows:
+        for value in (row["review_screenshot_path"], row["upi_qr_path"]):
+            if value:
+                paths.add(value)
+    return paths
+
+
+def compute_storage_stats() -> dict:
+    """Disk usage of backend/uploads + how much of it is referenced/orphaned."""
+    files = [path for path in UPLOADS_DIR.iterdir() if path.is_file()] if UPLOADS_DIR.exists() else []
+    referenced = _submission_upload_paths()
+
+    total_bytes = review_bytes = qr_bytes = other_bytes = orphan_bytes = 0
+    review_files = qr_files = other_files = orphan_files = 0
+    for path in files:
+        size = path.stat().st_size
+        total_bytes += size
+        relative = f"/uploads/{path.name}"
+        if relative not in referenced:
+            orphan_bytes += size
+            orphan_files += 1
+        elif path.name.startswith("review-"):
+            review_bytes += size
+            review_files += 1
+        elif path.name.startswith("upiqr-"):
+            qr_bytes += size
+            qr_files += 1
+        else:
+            other_bytes += size
+            other_files += 1
+
+    quota_mb = int(_settings_row().get("storage_quota_mb", 1024))
+    quota_bytes = quota_mb * 1024 * 1024
+    return {
+        "usedBytes": total_bytes,
+        "totalFiles": len(files),
+        "reviewBytes": review_bytes,
+        "reviewFiles": review_files,
+        "qrBytes": qr_bytes,
+        "qrFiles": qr_files,
+        "otherBytes": other_bytes,
+        "otherFiles": other_files,
+        "orphanBytes": orphan_bytes,
+        "orphanFiles": orphan_files,
+        "quotaBytes": quota_bytes,
+        "quotaMb": quota_mb,
+        "usedPercent": round(total_bytes * 100 / quota_bytes, 1) if quota_bytes else 0.0,
+        "overQuota": total_bytes > quota_bytes,
+    }
+
+
 def serialize_submission(submission: dict | None) -> dict:
     if not submission:
         return {}
@@ -257,6 +467,9 @@ def on_startup() -> None:
     init_db()
 
 
+# ---------------------------------------------------------------------------
+# Public endpoints
+# ---------------------------------------------------------------------------
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True}
@@ -269,6 +482,7 @@ def get_public_settings() -> dict:
 
 @app.post("/api/submissions")
 async def create_submission(
+    request: Request,
     customerName: str = Form(...),
     orderLast4: str = Form(...),
     customerComment: str = Form(""),
@@ -277,6 +491,8 @@ async def create_submission(
     reviewScreenshot: UploadFile = File(...),
     upiQr: UploadFile | None = File(default=None),
 ):
+    submit_limiter.check(client_ip(request), SUBMIT_RATE_LIMIT, SUBMIT_RATE_WINDOW_SECONDS)
+
     settings = public_settings_payload()
     if not settings["campaignActive"]:
         raise HTTPException(status_code=400, detail=settings["pauseMessage"])
@@ -289,33 +505,43 @@ async def create_submission(
     if len(last4) != 4 or not last4.isdigit():
         raise HTTPException(status_code=400, detail="Order ID last 4 digits must be exactly 4 numbers.")
 
-    await validate_image(reviewScreenshot, "Review screenshot")
-    review_path = await save_upload(reviewScreenshot, "review")
-
     final_upi = upiId.strip()
-    qr_path = None
     if payoutMethod == "upi":
         if not final_upi or "@" not in final_upi:
             raise HTTPException(status_code=400, detail="Valid UPI ID is required.")
     else:
         await validate_image(upiQr, "UPI QR image")
+
+    # Only after EVERY form field validated do we read + write files to disk —
+    # an invalid submission must never leave orphan uploads behind.
+    await validate_image(reviewScreenshot, "Review screenshot")
+    review_path = await save_upload(reviewScreenshot, "review")
+
+    qr_path = None
+    if payoutMethod == "qr":
         qr_path = await save_upload(upiQr, "upiqr")
         final_upi = ""
 
     now = utc_now()
-    with get_connection() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO submissions (
-                customer_name, order_last4, customer_comment, review_screenshot_path, payout_method,
-                upi_id, upi_qr_path, status, admin_notes, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
-            """,
-            (customer_name, last4, customer_comment, review_path, payoutMethod, final_upi, qr_path, now, now),
-        )
-        row_id = cursor.lastrowid
-        reference = f"MMC-{now[:4]}-{row_id:06d}"
-        conn.execute("UPDATE submissions SET reference = ? WHERE id = ?", (reference, row_id))
+    try:
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO submissions (
+                    customer_name, order_last4, customer_comment, review_screenshot_path, payout_method,
+                    upi_id, upi_qr_path, status, admin_notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+                """,
+                (customer_name, last4, customer_comment, review_path, payoutMethod, final_upi, qr_path, now, now),
+            )
+            row_id = cursor.lastrowid
+            reference = f"MMC-{now[:4]}-{row_id:06d}"
+            conn.execute("UPDATE submissions SET reference = ? WHERE id = ?", (reference, row_id))
+    except Exception:
+        # DB failure — remove the files we just wrote so they don't become orphans.
+        _delete_upload_file(review_path)
+        _delete_upload_file(qr_path)
+        raise
 
     return {
         "message": "Submission received successfully.",
@@ -357,19 +583,21 @@ def get_submission_status(reference: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
 @app.post("/api/auth/login")
 def login(request: Request, email: str = Form(...), password: str = Form(...)) -> dict:
+    login_limiter.check(client_ip(request), LOGIN_RATE_LIMIT, LOGIN_RATE_WINDOW_SECONDS)
     normalized = email.strip().lower()
-    if normalized != DEFAULT_ADMIN_EMAIL:
-        raise HTTPException(status_code=401, detail="This email is not allowed.")
-
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (normalized,)).fetchone()
-    admin = row_to_dict(row)
+    admin = _load_admin_row(normalized)
+    # One generic message for every failure (bad email, bad password, unknown
+    # account) — distinct errors let attackers enumerate which admin email the
+    # system uses, and the email must never be revealed anyway.
     if not admin or not verify_password(password, admin["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    session_admin = {"id": admin["id"], "email": admin["email"]}
+    session_admin = {"id": admin["id"], "email": admin["email"], "v": int(admin["token_version"])}
     request.session.clear()
     request.session["admin"] = session_admin
     return {"ok": True, "admin": session_admin, "token": make_admin_token(session_admin)}
@@ -377,8 +605,7 @@ def login(request: Request, email: str = Form(...), password: str = Form(...)) -
 
 @app.post("/api/auth/google")
 def login_with_google(request: Request, payload: dict) -> dict:
-    credential = str(payload.get("credential", ""))
-    session_admin = verify_google_token(credential)
+    session_admin = verify_google_token(payload.get("credential", ""))
     request.session.clear()
     request.session["admin"] = session_admin
     return {"ok": True, "admin": session_admin, "token": make_admin_token(session_admin)}
@@ -403,7 +630,8 @@ def change_password(
     newPassword: str = Form(...),
 ) -> dict:
     admin = require_admin(request)
-    if len(newPassword.strip()) < 8:
+    new = newPassword.strip()
+    if len(new) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
 
     with get_connection() as conn:
@@ -411,17 +639,27 @@ def change_password(
         current = row_to_dict(row)
         if not current or not verify_password(currentPassword, current["password_hash"]):
             raise HTTPException(status_code=400, detail="Current password is incorrect.")
+        next_version = int(current["token_version"]) + 1
         conn.execute(
-            "UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE id = ?",
-            (hash_password(newPassword.strip()), utc_now(), admin["id"]),
+            "UPDATE admin_users SET password_hash = ?, token_version = ?, updated_at = ? WHERE id = ?",
+            (hash_password(new), next_version, utc_now(), admin["id"]),
         )
-    return {"ok": True, "message": "Password updated successfully."}
+
+    # Refresh the session with the new version so the current tab stays logged
+    # in; every OTHER session/token (old version) is now invalid everywhere.
+    fresh = {"id": admin["id"], "email": admin["email"], "v": next_version}
+    request.session.clear()
+    request.session["admin"] = fresh
+    return {"ok": True, "message": "Password updated successfully.", "token": make_admin_token(fresh)}
 
 
+# ---------------------------------------------------------------------------
+# Admin endpoints
+# ---------------------------------------------------------------------------
 @app.get("/api/admin/settings")
 def get_admin_settings(request: Request) -> dict:
     require_admin(request)
-    return public_settings_payload()
+    return admin_settings_payload()
 
 
 @app.put("/api/admin/settings")
@@ -434,6 +672,12 @@ def update_admin_settings(request: Request, payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="Cashback amount must be a number.")
     if not 1 <= cashback_amount <= 10_000:
         raise HTTPException(status_code=400, detail="Cashback amount must be between 1 and 10000.")
+    try:
+        storage_quota_mb = int(payload.get("storageQuotaMb", 1024))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Storage quota must be a number.")
+    if not 10 <= storage_quota_mb <= 102_400:
+        raise HTTPException(status_code=400, detail="Storage quota must be between 10 MB and 102400 MB.")
     campaign_active = 1 if payload.get("campaignActive", True) else 0
     pause_message = str(payload.get("pauseMessage", "")).strip() or "Cashback submissions are paused right now. Please try again shortly."
     success_note = str(payload.get("successNote", "")).strip() or "Cashback will be checked and processed after review."
@@ -442,12 +686,12 @@ def update_admin_settings(request: Request, payload: dict) -> dict:
             """
             UPDATE app_settings
             SET business_name = ?, cashback_amount = ?, campaign_active = ?,
-                pause_message = ?, success_note = ?, updated_at = ?
+                pause_message = ?, success_note = ?, storage_quota_mb = ?, updated_at = ?
             WHERE id = 1
             """,
-            (business_name, cashback_amount, campaign_active, pause_message, success_note, utc_now()),
+            (business_name, cashback_amount, campaign_active, pause_message, success_note, storage_quota_mb, utc_now()),
         )
-    return public_settings_payload()
+    return admin_settings_payload()
 
 
 @app.get("/api/admin/submissions")
@@ -519,6 +763,66 @@ def update_submission(request: Request, submission_id: int, payload: dict) -> di
     return serialize_submission(row_to_dict(row))
 
 
+@app.delete("/api/admin/submissions/{submission_id}")
+def delete_submission(request: Request, submission_id: int) -> dict:
+    """Permanently delete a submission: DB row AND its uploaded files."""
+    require_admin(request)
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Submission not found.")
+        submission = row_to_dict(row)
+        conn.execute("DELETE FROM submissions WHERE id = ?", (submission_id,))
+    _delete_upload_file(submission.get("review_screenshot_path"))
+    _delete_upload_file(submission.get("upi_qr_path"))
+    return {
+        "ok": True,
+        "message": "Submission deleted permanently.",
+        "id": submission_id,
+        "reference": submission.get("reference"),
+        "freedBytes": compute_storage_stats()["usedBytes"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Storage tracking
+# ---------------------------------------------------------------------------
+@app.get("/api/admin/storage")
+def storage_stats(request: Request) -> dict:
+    require_admin(request)
+    return compute_storage_stats()
+
+
+@app.post("/api/admin/storage/cleanup")
+def cleanup_orphan_uploads(request: Request) -> dict:
+    """Delete upload files that no submission references (e.g. uploads left
+    behind by interrupted submissions). Safe: only files under the uploads
+    directory are touched, using their exact basename."""
+    require_admin(request)
+    referenced = _submission_upload_paths()
+    removed_bytes = 0
+    removed_files = 0
+    for path in UPLOADS_DIR.iterdir():
+        if not path.is_file():
+            continue
+        if f"/uploads/{path.name}" in referenced:
+            continue
+        try:
+            removed_bytes += path.stat().st_size
+            path.unlink()
+            removed_files += 1
+        except OSError:
+            logger.warning("Could not delete orphan upload %s", path)
+    stats = compute_storage_stats()
+    return {
+        "ok": True,
+        "message": f"Removed {removed_files} unreferenced file(s) and freed {removed_bytes} bytes.",
+        "removedFiles": removed_files,
+        "freedBytes": removed_bytes,
+        "storage": stats,
+    }
+
+
 @app.get("/api/admin/dashboard")
 def dashboard(request: Request) -> dict:
     require_admin(request)
@@ -532,6 +836,9 @@ def dashboard(request: Request) -> dict:
     return {"submissions": submissions, "stats": {"total": len(submissions), **counts}}
 
 
+# ---------------------------------------------------------------------------
+# SPA hosting (built frontend served by the backend itself)
+# ---------------------------------------------------------------------------
 # index.html must never be cached, or a redeployed frontend can keep serving a
 # stale bundle (and a stale bundle keeps pointing at an old backend).
 NO_CACHE_HTML = {"Cache-Control": "no-cache"}
@@ -540,7 +847,14 @@ NO_CACHE_HTML = {"Cache-Control": "no-cache"}
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def frontend_index():
     if FRONTEND_INDEX.exists():
-        return FileResponse(FRONTEND_INDEX, headers=NO_CACHE_HTML)
+        response = FileResponse(FRONTEND_INDEX, headers=NO_CACHE_HTML)
+        if IS_PRODUCTION:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; "
+                "connect-src 'self' https://oauth2.googleapis.com; frame-src https://accounts.google.com"
+            )
+        return response
     return {
         "ok": True,
         "message": "Frontend build not found yet.",

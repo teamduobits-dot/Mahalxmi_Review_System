@@ -1,16 +1,19 @@
 import { useMemo, useState } from 'react'
-import { CheckCircle2, ClipboardList, IndianRupee, Inbox, Search, Wallet } from 'lucide-react'
+import { CheckCircle2, ClipboardList, IndianRupee, Inbox, Search, Trash2, Wallet } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { ImageCell, StatCard } from '../../components/admin'
-import { StatusPill } from '../../components/ui'
-import { assetUrl } from '../../lib/api'
+import StorageBar from '../../components/StorageBar'
+import { ErrorBox, Spinner, StatusPill } from '../../components/ui'
+import { assetUrl, api } from '../../lib/api'
 import { formatDateTime, money } from '../../lib/format'
 
 const FILTERS = ['all', 'pending', 'approved', 'paid', 'rejected']
 
-export default function Dashboard({ submissions, settings, onRefresh, loading }) {
+export default function Dashboard({ submissions, settings, storage, onDeleted, onRefresh, loading }) {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
+  const [deletingId, setDeletingId] = useState(null)
+  const [deleteError, setDeleteError] = useState('')
 
   const filtered = useMemo(() => {
     return submissions.filter((item) => {
@@ -35,6 +38,26 @@ export default function Dashboard({ submissions, settings, onRefresh, loading })
     return { total, pending, approved, paid, rejected }
   }, [submissions])
 
+  const handleDelete = async (item) => {
+    if (
+      !window.confirm(
+        `Permanently delete ${item.reference} (${item.customerName})?\n\nThis removes the submission AND its uploaded screenshot/QR files from disk. This cannot be undone.`
+      )
+    ) {
+      return
+    }
+    setDeletingId(item.id)
+    setDeleteError('')
+    try {
+      await api.deleteSubmission(item.id)
+      onDeleted?.(item.id)
+    } catch (deleteErr) {
+      setDeleteError(deleteErr.message)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-7xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -57,6 +80,10 @@ export default function Dashboard({ submissions, settings, onRefresh, loading })
         <StatCard icon={<IndianRupee size={18} />} label="Paid" value={stats.paid} sub={money(stats.paid * (settings?.cashbackAmount || 15))} tone="blue" delay={0.15} />
         <StatCard icon={<span className="text-lg">🚫</span>} label="Rejected" value={stats.rejected} tone="red" delay={0.2} />
       </div>
+
+      <StorageBar stats={storage} className="mt-5" />
+
+      {deleteError ? <div className="mt-4"><ErrorBox>{deleteError}</ErrorBox></div> : null}
 
       <div className="mt-6 rounded-3xl border border-cocoa-100 bg-white p-4 shadow-soft">
         <div className="flex flex-wrap items-center gap-3">
@@ -93,6 +120,7 @@ export default function Dashboard({ submissions, settings, onRefresh, loading })
                 <th className="px-3 py-3">Payout</th>
                 <th className="px-3 py-3">Status</th>
                 <th className="px-3 py-3">Created</th>
+                <th className="px-3 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -113,11 +141,21 @@ export default function Dashboard({ submissions, settings, onRefresh, loading })
                   </td>
                   <td className="px-3 py-3"><StatusPill status={item.status} /></td>
                   <td className="px-3 py-3 text-xs font-semibold text-cocoa-500">{formatDateTime(item.createdAt)}</td>
+                  <td className="px-3 py-3 text-right">
+                    <button
+                      onClick={() => handleDelete(item)}
+                      disabled={deletingId !== null}
+                      title="Delete permanently"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 transition hover:border-red-300 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      {deletingId === item.id ? <Spinner size={13} /> : <Trash2 size={13} />} Delete
+                    </button>
+                  </td>
                 </tr>
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-14 text-center">
+                  <td colSpan={8} className="px-3 py-14 text-center">
                     {submissions.length === 0 ? (
                       <div className="mx-auto max-w-sm">
                         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-cream-100 text-cocoa-300">

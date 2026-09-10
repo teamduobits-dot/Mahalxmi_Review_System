@@ -26,6 +26,16 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: true,
       allowedHosts: true,
+      headers: {
+        // Local approximation of the production headers (backend + Firebase
+        // Hosting) so CSP problems show up in dev instead of after deploying.
+        'Content-Security-Policy':
+          "default-src 'self'; img-src 'self' data: blob: https:; " +
+          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+          "font-src https://fonts.gstatic.com; script-src 'self'; " +
+          "connect-src 'self' ws://localhost:5173 http://127.0.0.1:8000 http://localhost:8000 https://oauth2.googleapis.com; " +
+          "frame-src https://accounts.google.com",
+      },
       proxy: {
         '/api': {
           target: backend,

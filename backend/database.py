@@ -13,6 +13,34 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "mahalaxmi.db"
 UPLOADS_DIR = BASE_DIR / "uploads"
 
+
+def _load_env_file() -> None:
+    """Load `backend/.env` into os.environ (existing env vars always win).
+
+    The app reads configuration from environment variables; this makes a
+    `backend/.env` file work for local and single-host runs without exporting
+    everything by hand. Format: one `KEY=VALUE` per line, `#` comments.
+    """
+    env_path = BASE_DIR / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file()
+
 # In production (APP_ENV=production) the admin credentials must come from the
 # environment — no hard-coded fallbacks. Local development keeps the
 # documented defaults so `uvicorn main:app` just works out of the box.
@@ -62,6 +90,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
+                token_version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -76,6 +105,7 @@ def init_db() -> None:
                 campaign_active INTEGER NOT NULL DEFAULT 1,
                 pause_message TEXT NOT NULL,
                 success_note TEXT NOT NULL,
+                storage_quota_mb INTEGER NOT NULL DEFAULT 1024,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -102,7 +132,10 @@ def init_db() -> None:
             )
             """
         )
-        ensure_column(conn, 'submissions', 'customer_comment', "TEXT NOT NULL DEFAULT ''")
+        # Lightweight migrations for databases created before these columns existed.
+        ensure_column(conn, "submissions", "customer_comment", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "admin_users", "token_version", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column(conn, "app_settings", "storage_quota_mb", "INTEGER NOT NULL DEFAULT 1024")
 
         now = utc_now()
         existing_admin = conn.execute(
@@ -110,7 +143,8 @@ def init_db() -> None:
         ).fetchone()
         if not existing_admin:
             conn.execute(
-                "INSERT INTO admin_users (email, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO admin_users (email, password_hash, token_version, created_at, updated_at) "
+                "VALUES (?, ?, 1, ?, ?)",
                 (DEFAULT_ADMIN_EMAIL, hash_password(DEFAULT_ADMIN_PASSWORD), now, now),
             )
 
@@ -120,8 +154,8 @@ def init_db() -> None:
                 """
                 INSERT INTO app_settings (
                     id, business_name, cashback_amount, campaign_active,
-                    pause_message, success_note, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    pause_message, success_note, storage_quota_mb, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     1,
@@ -130,6 +164,7 @@ def init_db() -> None:
                     1,
                     "Cashback submissions are paused right now. Please try again shortly.",
                     "Cashback will be checked and processed after review.",
+                    1024,
                     now,
                     now,
                 ),

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, CheckCircle2, IndianRupee, QrCode, XCircle } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, IndianRupee, QrCode, Trash2, XCircle } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ImageCell } from '../../components/admin'
 import { ErrorBox, LightboxArea, SectionCard, Spinner, StatusPill } from '../../components/ui'
 import { api, assetUrl } from '../../lib/api'
 import { formatDateTime, money } from '../../lib/format'
 
-export default function Detail({ settings, onUpdated }) {
+export default function Detail({ settings, onUpdated, onDeleted }) {
   const { id } = useParams()
   const navigate = useNavigate()
   const [submission, setSubmission] = useState(null)
@@ -40,6 +40,27 @@ export default function Detail({ settings, onUpdated }) {
     } catch (updateError) {
       setError(updateError.message)
     } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteSubmission = async () => {
+    if (!submission || busy) return
+    if (
+      !window.confirm(
+        `Permanently delete ${submission.reference} (${submission.customerName})?\n\nThis removes the submission AND its uploaded screenshot/QR files from disk. This cannot be undone.`
+      )
+    ) {
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await api.deleteSubmission(submission.id)
+      onDeleted?.(submission.id)
+      navigate('/admin')
+    } catch (deleteError) {
+      setError(deleteError.message)
       setBusy(false)
     }
   }
@@ -125,6 +146,10 @@ export default function Detail({ settings, onUpdated }) {
                 </button>
                 <button onClick={() => updateSubmission('rejected')} disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-red-200 bg-red-50 px-4 py-3 text-sm font-extrabold text-red-600 transition hover:border-red-300 disabled:opacity-60">
                   <XCircle size={16} /> Reject request
+                </button>
+                <div className="my-2 border-t border-cocoa-100" />
+                <button onClick={deleteSubmission} disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-cocoa-900 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-red-600 disabled:opacity-60">
+                  <Trash2 size={16} /> Delete permanently
                 </button>
               </div>
               {busy && <p className="mt-3 text-xs font-semibold text-cocoa-400">Saving changes...</p>}

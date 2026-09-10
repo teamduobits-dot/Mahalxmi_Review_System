@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Home, LogOut, RefreshCw, Settings as SettingsIcon, WifiOff } from 'lucide-react'
+import { AlertTriangle, HardDrive, Home, LogOut, RefreshCw, Settings as SettingsIcon, WifiOff } from 'lucide-react'
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Login from './Login'
 import Dashboard from './Dashboard'
 import Detail from './Detail'
 import Settings from './Settings'
+import Storage from './Storage'
 import { ADMIN_ROUTE } from '../../lib/adminRoute'
 import { api, clearToken } from '../../lib/api'
 import { Spinner } from '../../components/ui'
@@ -82,6 +83,7 @@ function AdminShell({ user, onLogout, offline, children }) {
   const location = useLocation()
   const nav = [
     { to: '/admin', label: 'Dashboard', icon: <Home size={16} /> },
+    { to: '/admin/storage', label: 'Storage', icon: <HardDrive size={16} /> },
     { to: '/admin/settings', label: 'Settings', icon: <SettingsIcon size={16} /> },
   ]
 
@@ -161,18 +163,21 @@ export default function AdminApp() {
   const [authError, setAuthError] = useState('')
   const [settings, setSettings] = useState(null)
   const [submissions, setSubmissions] = useState([])
+  const [storage, setStorage] = useState(null)
   const [loadingData, setLoadingData] = useState(false)
   const [pollError, setPollError] = useState({ message: '', status: 0 })
 
   const loadData = useCallback(async () => {
     setLoadingData(true)
     try {
-      const [submissionList, adminSettings] = await Promise.all([
+      const [submissionList, adminSettings, storageStats] = await Promise.all([
         api.getSubmissions(),
         api.getAdminSettings(),
+        api.getStorage(),
       ])
       setSubmissions(submissionList)
       setSettings(adminSettings)
+      setStorage(storageStats)
       setPollError({ message: '', status: 0 })
     } catch (error) {
       // Keep the user logged in — a failed refresh is not a logout. The banner
@@ -258,6 +263,13 @@ export default function AdminApp() {
     await loadData()
   }
 
+  // A submission was permanently deleted (from the dashboard row or the detail
+  // page). Update the local list so it disappears immediately, then refresh.
+  const handleDeleted = async (deletedId) => {
+    setSubmissions((current) => current.filter((item) => item.id !== deletedId))
+    await loadData().catch(() => {})
+  }
+
   const login = async (email, password) => {
     setAuthError('')
     try {
@@ -290,6 +302,7 @@ export default function AdminApp() {
     setAuthState({ loading: false, user: null, serverError: '' })
     setSubmissions([])
     setSettings(null)
+    setStorage(null)
     setPollError({ message: '', status: 0 })
   }
 
@@ -308,7 +321,6 @@ export default function AdminApp() {
   if (!authState.user) {
     return (
       <Login
-        defaultEmail="team.duobits@gmail.com"
         onLogin={login}
         onGoogleLogin={loginWithGoogle}
         error={authError}
@@ -332,8 +344,21 @@ export default function AdminApp() {
         />
       ) : null}
       <Routes>
-        <Route index element={<Dashboard submissions={submissions} settings={settings} onRefresh={() => loadData().catch(() => {})} loading={loadingData} />} />
-        <Route path="submission/:id" element={<Detail settings={settings} onUpdated={() => loadData().catch(() => {})} />} />
+        <Route
+          index
+          element={
+            <Dashboard
+              submissions={submissions}
+              settings={settings}
+              storage={storage}
+              onDeleted={handleDeleted}
+              onRefresh={() => loadData().catch(() => {})}
+              loading={loadingData}
+            />
+          }
+        />
+        <Route path="submission/:id" element={<Detail settings={settings} onUpdated={() => loadData().catch(() => {})} onDeleted={handleDeleted} />} />
+        <Route path="storage" element={<Storage storage={storage} onRefresh={() => loadData().catch(() => {})} />} />
         <Route path="settings" element={<Settings settings={settings} onSaved={(updated) => setSettings(updated)} />} />
         <Route path="*" element={<Navigate to={ADMIN_ROUTE} replace />} />
       </Routes>
