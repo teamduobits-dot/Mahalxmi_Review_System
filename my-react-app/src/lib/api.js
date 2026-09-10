@@ -1,22 +1,41 @@
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const TOKEN_KEY = 'mm_admin_token'
+const TOKEN_COOKIE = 'mm_admin_token'
 const AUTH_PATHS = ['/api/auth/me', '/api/auth/login', '/api/auth/google']
 const RETRY_DELAY_MS = 700
 
+// In-memory fallback store: sandboxed/embedded preview iframes can block
+// localStorage entirely. The memory copy keeps the admin session alive for the
+// current page load even when localStorage is unavailable.
+let memoryToken = ''
+
 function getToken() {
   try {
-    return localStorage.getItem(TOKEN_KEY) || ''
+    return localStorage.getItem(TOKEN_KEY) || memoryToken
   } catch {
-    return ''
+    return memoryToken
   }
 }
 
 function setToken(token) {
+  memoryToken = token || ''
   try {
     if (token) localStorage.setItem(TOKEN_KEY, token)
     else localStorage.removeItem(TOKEN_KEY)
   } catch {
-    // ignore localStorage failures
+    // localStorage unavailable — the in-memory copy still works
+  }
+  // Second fallback store: a first-party cookie. Some preview gateways strip
+  // the Authorization header but always forward cookies, so the backend also
+  // accepts the token from this cookie.
+  try {
+    if (token) {
+      document.cookie = `${TOKEN_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax; Max-Age=86400`
+    } else {
+      document.cookie = `${TOKEN_COOKIE}=; Path=/; Max-Age=0`
+    }
+  } catch {
+    // cookies unavailable — headers/query-param channels still apply
   }
 }
 
@@ -76,9 +95,22 @@ async function fetchWithRetry(path, options) {
 async function apiFetch(path, options = {}) {
   const token = getToken()
   const headers = new Headers(options.headers || {})
-  if (token) headers.set('Authorization', `Bearer ${token}`)
+  if (token) {
+    // Send the token two ways: the standard Authorization header and a custom
+    // header, because preview gateways/iframe contexts can strip either one.
+    headers.set('Authorization', `Bearer ${token}`)
+    headers.set('X-Admin-Token', token)
+  }
 
-  const response = await fetchWithRetry(`${API_BASE}${path}`, {
+  // Last-resort channel for admin data calls: carry the token in the query
+  // string so auth survives even when every header and cookie is stripped.
+  let target = `${API_BASE}${path}`
+  if (token && path.startsWith('/api/admin')) {
+    const sep = target.includes('?') ? '&' : '?'
+    target += `${sep}admin_token=${encodeURIComponent(token)}`
+  }
+
+  const response = await fetchWithRetry(target, {
     credentials: 'include',
     ...options,
     headers,

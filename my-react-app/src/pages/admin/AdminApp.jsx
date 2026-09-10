@@ -281,7 +281,12 @@ export default function AdminApp() {
   }
 
   const logout = async () => {
-    await api.logout()
+    try {
+      await api.logout()
+    } catch {
+      // Backend unreachable — api.logout already cleared the local token in its
+      // finally block; just reset the UI so the login screen comes back.
+    }
     setAuthState({ loading: false, user: null, serverError: '' })
     setSubmissions([])
     setSettings(null)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Literal
@@ -18,6 +19,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from database import DEFAULT_ADMIN_EMAIL, UPLOADS_DIR, get_connection, init_db, row_to_dict, utc_now
 from security import hash_password, verify_password
+
+logger = logging.getLogger("mahalaxmi")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s: %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+logger.setLevel(logging.INFO)
 
 ALLOWED_STATUSES = {"pending", "approved", "paid", "rejected"}
 
@@ -94,19 +102,44 @@ def make_admin_token(admin: dict) -> str:
     return token_serializer.dumps({"id": admin["id"], "email": admin["email"]})
 
 
-def resolve_admin(request: Request) -> dict | None:
+def _token_from_request(request: Request) -> str:
+    """Extract the admin bearer token from whichever channel survived the trip.
+
+    Preview gateways and embedded/iframe browser contexts can strip the
+    Authorization header, block localStorage, or drop third-party cookies —
+    any single channel can fail in isolation. The token is therefore accepted
+    from several places, in order:
+
+      1. Authorization: Bearer <token>   (standard)
+      2. X-Admin-Token: <token>          (survives gateways that drop Authorization)
+      3. ?admin_token=<token>            (last resort — survives everything)
+      4. mm_admin_token cookie           (first-party fallback store set by the frontend)
+    """
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         token = auth_header.split(" ", 1)[1].strip()
         if token:
-            try:
-                payload = token_serializer.loads(token)
-                email = str(payload.get("email", "")).strip().lower()
-                admin_id = int(payload.get("id", 0))
-                if email == DEFAULT_ADMIN_EMAIL and admin_id > 0:
-                    return {"id": admin_id, "email": email}
-            except (BadSignature, ValueError, TypeError):
-                return None
+            return token
+    x_token = request.headers.get("x-admin-token", "").strip()
+    if x_token:
+        return x_token
+    query_token = request.query_params.get("admin_token", "").strip()
+    if query_token:
+        return query_token
+    return (request.cookies.get("mm_admin_token") or "").strip()
+
+
+def resolve_admin(request: Request) -> dict | None:
+    token = _token_from_request(request)
+    if token:
+        try:
+            payload = token_serializer.loads(token)
+            email = str(payload.get("email", "")).strip().lower()
+            admin_id = int(payload.get("id", 0))
+            if email == DEFAULT_ADMIN_EMAIL and admin_id > 0:
+                return {"id": admin_id, "email": email}
+        except (BadSignature, ValueError, TypeError):
+            logger.warning("Admin auth rejected: token failed signature validation")
 
     admin = request.session.get("admin")
     if admin and str(admin.get("email", "")).strip().lower() == DEFAULT_ADMIN_EMAIL:
@@ -117,6 +150,17 @@ def resolve_admin(request: Request) -> dict | None:
 def require_admin(request: Request) -> dict:
     admin = resolve_admin(request)
     if not admin:
+        # Diagnostic detail for exactly which auth channel failed — the frontend
+        # sends the token several ways, so this pinpoints gateway stripping.
+        logger.info(
+            "Admin auth failed — authorization header: %s, x-admin-token: %s, "
+            "query token: %s, cookie token: %s, session cookie: %s",
+            bool(request.headers.get("authorization")),
+            bool(request.headers.get("x-admin-token")),
+            bool(request.query_params.get("admin_token")),
+            bool(request.cookies.get("mm_admin_token")),
+            bool(request.session.get("admin")),
+        )
         raise HTTPException(status_code=401, detail="Please log in as admin.")
     return admin
 

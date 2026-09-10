@@ -67,6 +67,10 @@ Open:
 
 ### 1.4 "Port already in use" cleanup
 
+> Since the multi-channel-auth fix, Vite runs with `strictPort: true`: if `5173` is busy
+> it **errors out** ("Port 5173 is already in use") instead of silently starting on 5174 —
+> that error is on purpose so the proxy and docs never silently point at the wrong port.
+
 ```powershell
 netstat -ano | findstr :8000
 netstat -ano | findstr :5173
