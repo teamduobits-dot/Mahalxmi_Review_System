@@ -60,8 +60,10 @@ project credentials), 60-day Storage lifecycle rule (one command in the
 guide), budget alerts, migrating any existing SQLite rows (production DB is
 empty), and the planned extra marketing settings fields (nextOrderDiscount
 etc.) — intentionally deferred; the settings doc is trivially extensible.
-`source.md` (generated source map) predates this session and is stale for the
-new backend files.
+`source.md` was **fully regenerated this session** (2026-09-11) and now
+documents the post-migration architecture, all new files, both runtime modes,
+the complete API, and deployment — it is the recommended first read for any
+AI agent or developer touching this repo.
 
 ---
 
