@@ -1,0 +1,7 @@
+# Local state must never leak into the container image.
+.env
+mahalaxmi.db
+uploads/
+__pycache__/
+*.pyc
+.venv/

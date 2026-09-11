@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// The backend is the ONLY client of Firestore: it talks to the database with
+// the Firebase Admin SDK (service account), which bypasses these rules.
+// Browsers and mobile apps must never touch Firestore directly — every
+// request goes through the FastAPI API on Cloud Run. Hence: deny everything.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

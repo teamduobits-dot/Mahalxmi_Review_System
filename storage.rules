@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// PRIVATE bucket. Uploaded review screenshots and UPI QR images are written
+// and read exclusively by the backend via the Admin SDK (which bypasses
+// rules). No public reads, no direct client uploads — the API validates every
+// file and stores it under submissions/{uuid}/. Hence: deny everything.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

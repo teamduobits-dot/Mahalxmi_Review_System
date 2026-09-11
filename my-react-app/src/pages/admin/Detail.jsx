@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft, CheckCircle2, IndianRupee, QrCode, Trash2, XCircle } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ImageCell } from '../../components/admin'
-import { ErrorBox, LightboxArea, SectionCard, Spinner, StatusPill } from '../../components/ui'
+import { DuplicateFlag, ErrorBox, LightboxArea, SectionCard, Spinner, StatusPill } from '../../components/ui'
 import { api, assetUrl } from '../../lib/api'
 import { formatDateTime, money } from '../../lib/format'
 
@@ -92,6 +92,7 @@ export default function Detail({ settings, onUpdated, onDeleted }) {
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <h1 className="font-display text-2xl font-extrabold tracking-tight text-cocoa-900">{submission.reference}</h1>
           <StatusPill status={submission.status} />
+          {submission.flaggedDuplicate ? <DuplicateFlag ofReference={submission.duplicateOf} /> : null}
         </div>
 
         <div className="mt-6 grid gap-5 lg:grid-cols-3">

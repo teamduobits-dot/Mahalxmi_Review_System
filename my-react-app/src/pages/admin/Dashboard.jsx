@@ -3,7 +3,7 @@ import { CheckCircle2, ClipboardList, IndianRupee, Inbox, Search, Trash2, Wallet
 import { Link } from 'react-router-dom'
 import { ImageCell, StatCard } from '../../components/admin'
 import StorageBar from '../../components/StorageBar'
-import { ErrorBox, Spinner, StatusPill } from '../../components/ui'
+import { DuplicateFlag, ErrorBox, Spinner, StatusPill } from '../../components/ui'
 import { assetUrl, api } from '../../lib/api'
 import { formatDateTime, money } from '../../lib/format'
 
@@ -139,7 +139,12 @@ export default function Dashboard({ submissions, settings, storage, onDeleted, o
                   <td className="px-3 py-3 text-xs font-semibold text-cocoa-700">
                     {item.payoutMethod === 'upi' ? item.upiId : 'UPI QR uploaded'}
                   </td>
-                  <td className="px-3 py-3"><StatusPill status={item.status} /></td>
+                  <td className="px-3 py-3">
+                    <div className="flex flex-col items-start gap-1">
+                      <StatusPill status={item.status} />
+                      {item.flaggedDuplicate ? <DuplicateFlag ofReference={item.duplicateOf} /> : null}
+                    </div>
+                  </td>
                   <td className="px-3 py-3 text-xs font-semibold text-cocoa-500">{formatDateTime(item.createdAt)}</td>
                   <td className="px-3 py-3 text-right">
                     <button

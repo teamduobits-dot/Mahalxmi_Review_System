@@ -125,6 +125,7 @@ def init_db() -> None:
                 upi_qr_path TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 admin_notes TEXT NOT NULL DEFAULT '',
+                duplicate_of TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 approved_at TEXT,
@@ -134,6 +135,7 @@ def init_db() -> None:
         )
         # Lightweight migrations for databases created before these columns existed.
         ensure_column(conn, "submissions", "customer_comment", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "submissions", "duplicate_of", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "admin_users", "token_version", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(conn, "app_settings", "storage_quota_mb", "INTEGER NOT NULL DEFAULT 1024")
 
@@ -175,3 +177,187 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+# ---------------------------------------------------------------------------
+# Repository interface
+# ---------------------------------------------------------------------------
+# The functions below are the single data-access interface used by main.py.
+# firestore_service.py implements the exact same interface against Cloud
+# Firestore, so the backend can run on SQLite locally (zero config) and on
+# Firestore + Firebase Storage in production without touching the routes.
+# ---------------------------------------------------------------------------
+
+
+def init_store() -> None:
+    """Create schema + seed defaults. Alias kept for interface symmetry."""
+    init_db()
+
+
+def get_settings_row() -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM app_settings WHERE id = 1").fetchone()
+    return row_to_dict(row)
+
+
+def update_settings(fields: dict) -> None:
+    if not fields:
+        return
+    assignments = ", ".join(f"{column} = ?" for column in fields)
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE app_settings SET {assignments} WHERE id = 1",
+            tuple(fields.values()),
+        )
+
+
+def get_admin_by_email(email: str) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (email,)).fetchone()
+    return row_to_dict(row)
+
+
+def set_admin_password(email: str, password_hash: str, token_version: int, updated_at: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE admin_users SET password_hash = ?, token_version = ?, updated_at = ? WHERE email = ?",
+            (password_hash, token_version, updated_at, email),
+        )
+
+
+def create_submission(fields: dict, doc_id: str | None = None) -> dict:
+    """Insert a new submission and return the stored row (incl. reference).
+
+    ``doc_id`` is only used by the Firestore backend (it becomes the document
+    ID); SQLite generates its own integer ID.
+    """
+    now = fields["created_at"]
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO submissions (
+                customer_name, order_last4, customer_comment, review_screenshot_path, payout_method,
+                upi_id, upi_qr_path, status, admin_notes, created_at, updated_at, duplicate_of
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fields["customer_name"],
+                fields["order_last4"],
+                fields.get("customer_comment", ""),
+                fields["review_screenshot_path"],
+                fields["payout_method"],
+                fields.get("upi_id") or "",
+                fields.get("upi_qr_path"),
+                fields.get("status", "pending"),
+                fields.get("admin_notes", ""),
+                now,
+                fields.get("updated_at", now),
+                fields.get("duplicate_of", ""),
+            ),
+        )
+        row_id = cursor.lastrowid
+        reference = f"MMC-{now[:4]}-{row_id:06d}"
+        conn.execute("UPDATE submissions SET reference = ? WHERE id = ?", (reference, row_id))
+        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (row_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def get_submission_by_id(submission_id: Any) -> dict | None:
+    try:
+        numeric_id = int(submission_id)
+    except (TypeError, ValueError):
+        return None
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (numeric_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def get_submission_by_reference(reference: str) -> dict | None:
+    ref = reference.strip().upper()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM submissions WHERE UPPER(reference) = ?", (ref,)
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def list_submissions(search: str = "", status: str = "all") -> list[dict]:
+    query = "SELECT * FROM submissions WHERE 1=1"
+    params: list[str] = []
+    if status != "all":
+        query += " AND status = ?"
+        params.append(status)
+    if search.strip():
+        needle = f"%{search.strip().lower()}%"
+        query += (
+            " AND (LOWER(reference) LIKE ? OR LOWER(customer_name) LIKE ? "
+            "OR LOWER(order_last4) LIKE ? OR LOWER(COALESCE(upi_id, '')) LIKE ?)"
+        )
+        params.extend([needle, needle, needle, needle])
+    query += " ORDER BY id DESC"
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def all_submission_rows() -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM submissions").fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def update_submission_fields(submission_id: Any, fields: dict) -> dict | None:
+    if not fields:
+        return get_submission_by_id(submission_id)
+    try:
+        numeric_id = int(submission_id)
+    except (TypeError, ValueError):
+        return None
+    assignments = ", ".join(f"{column} = ?" for column in fields)
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE submissions SET {assignments} WHERE id = ?",
+            (*fields.values(), numeric_id),
+        )
+        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (numeric_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def delete_submission_row(submission_id: Any) -> dict | None:
+    try:
+        numeric_id = int(submission_id)
+    except (TypeError, ValueError):
+        return None
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (numeric_id,)).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM submissions WHERE id = ?", (numeric_id,))
+    return row_to_dict(row)
+
+
+def get_all_upload_paths() -> set[str]:
+    paths: set[str] = set()
+    for row in all_submission_rows():
+        for value in (row["review_screenshot_path"], row["upi_qr_path"]):
+            if value:
+                paths.add(value)
+    return paths
+
+
+def find_recent_duplicate(customer_name: str, order_last4: str, since_iso: str) -> dict | None:
+    """Find a submission with the same name + order digits within the window.
+
+    Order-last-4 alone is NOT unique — the combination of name + digits +
+    recency is used to flag suspicious double claims for admin review.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM submissions
+            WHERE LOWER(customer_name) = LOWER(?) AND order_last4 = ? AND created_at >= ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (customer_name, order_last4, since_iso),
+        ).fetchone()
+    return row_to_dict(row)
