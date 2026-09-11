@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# INSTALL: this file lives at the repo root only because the automated agent's
+# GitHub token lacks the `workflows` scope needed to write .github/workflows/.
+# To activate it, move it (or a person/CI with the workflows permission can):
+#     mkdir -p .github/workflows && mv deploy-cloud.workflow.yml .github/workflows/deploy-cloud.yml
+# Until then it is inert (GitHub only reads workflows from .github/workflows/).
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy (Cloud Run backend + Firebase Hosting frontend)
+
+# Deploys the production stack described in CLOUD_DEPLOYMENT.md:
+#   backend  -> Google Cloud Run service "mahalxmi-api" (built from backend/Dockerfile)
+#   frontend -> Firebase Hosting (with /api/** rewritten to Cloud Run)
+#
+# Required GitHub repository SECRETS (Settings -> Secrets and variables):
+#   GCP_SA_KEY      service-account JSON key with: Cloud Run Admin,
+#                   Cloud Build Editor, IAM Service Account User,
+#                   Secret Manager Secret Accessor, Firebase Deploy
+#                   (or split into two keys for the two jobs)
+#   FIREBASE_TOKEN  `firebase login:ci` token (frontend job only)
+#
+# Required repository VARIABLES:
+#   ADMIN_EMAIL     the production admin login email
+#
+# One-time GCP setup (your machine, logged in as project owner):
+#   gcloud services enable run.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com
+#   echo -n "<admin-password>" | gcloud secrets create mahalxmi-admin-password --data-file=-
+#   echo -n "$(openssl rand -hex 32)" | gcloud secrets create mahalxmi-session-secret --data-file=-
+#   # Firestore + Storage must already be enabled (see CLOUD_DEPLOYMENT.md Phase 2),
+#   # and the Storage lifecycle rule for 60-day image retention applied once.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-deploy
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    name: Deploy backend to Cloud Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: mahalxmi-api
+          source: ./backend
+          region: us-central1
+          flags: --allow-unauthenticated --memory=512Mi --cpu=1 --max-instances=2
+          env_vars: |
+            APP_ENV=production
+            BACKEND_MODE=firebase
+            ADMIN_EMAIL=${{ vars.ADMIN_EMAIL }}
+            CORS_ORIGINS=https://mahalxmi-review-system.web.app
+          secrets: |
+            ADMIN_PASSWORD=mahalxmi-admin-password
+            SESSION_SECRET=mahalxmi-session-secret
+
+      - name: Smoke-test the deployed API
+        run: |
+          curl --fail --retry 5 --retry-delay 10 --retry-all-errors \
+            "${{ steps.deploy.outputs.url }}/api/health"
+
+  frontend:
+    name: Deploy frontend to Firebase Hosting
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: my-react-app/package-lock.json
+
+      - name: Build frontend
+        working-directory: ./my-react-app
+        run: |
+          npm ci
+          npm run build
+
+      # /api/** is rewritten to Cloud Run by firebase.json (same origin — no
+      # VITE_API_BASE_URL needed).
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.GCP_SA_KEY }}
+          channelId: live
+          projectId: mahalxmi-review-system
