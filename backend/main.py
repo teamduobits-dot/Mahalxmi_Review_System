@@ -458,6 +458,18 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/health")
+def health_alias() -> dict:
+    """Platform health-check alias for Render (cold-start readiness).
+
+    Identical in cost to /api/health: deliberately lightweight — no database,
+    auth, or storage access — so the frontend can poll it while Render wakes
+    up without creating any data. Render's healthCheckPath points here; the
+    frontend polls /api/health. Both must stay side-effect free.
+    """
+    return {"status": "ok", "ok": True}
+
+
 @app.get("/api/settings")
 def get_public_settings() -> dict:
     return public_settings_payload()

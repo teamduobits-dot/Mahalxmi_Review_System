@@ -17,8 +17,10 @@ import {
 } from 'lucide-react'
 import FloatingFood from '../components/FloatingFood'
 import FoodIcon from '../components/FoodIcon'
+import SubmitOverlay from '../components/SubmitOverlay'
 import { ErrorBox, ImageUpload, SectionCard, Spinner } from '../components/ui'
-import { api } from '../lib/api'
+import { API_BASE, api } from '../lib/api'
+import { BACKEND_POLL_INTERVAL_MS, BACKEND_READY_TIMEOUT_MS, waitForBackendReady } from '../lib/backend'
 import { money, validUpiId } from '../lib/format'
 
 const SWIGGY_URL = 'https://www.swiggy.com/'
@@ -67,67 +69,141 @@ export default function CustomerForm() {
   const [form, setForm] = useState(INITIAL_FORM)
   const [touched, setTouched] = useState({})
   const [busy, setBusy] = useState(false)
+  const [submitCount, setSubmitCount] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [slowLoad, setSlowLoad] = useState(false)
+  const [backendReady, setBackendReady] = useState(false)
   const [error, setError] = useState('')
   const [jumpMode, setJumpMode] = useState('to-steps')
   const stepsRef = useRef(null)
   const formRef = useRef(null)
   const scrollAnimationRef = useRef(null)
+  // Ref mirrors for async flows (avoid stale closures); the state twin above
+  // records readiness for submit-time decisions.
+  const backendReadyRef = useRef(false)
+  const submitGuardRef = useRef(false)
+  const submitAbortRef = useRef(null)
+  const loadSeqRef = useRef(0)
 
-  // Initial settings load. State updates happen only inside promise callbacks,
-  // and a failed load is recorded in `settingsError` (network vs. other) so
-  // the failure screen can say exactly what is wrong and offer a retry.
+  // Initial settings load with silent Render cold-start tolerance. Network
+  // failures (backend still waking) retry quietly in the background while the
+  // branded splash stays up; only a real app error — or an exhausted budget —
+  // lands on the error screen with a retry button.
   useEffect(() => {
     let active = true
-    let timer
+    const timers = []
     const startedAt = Date.now()
+    const later = (fn, ms) => {
+      const id = window.setTimeout(() => {
+        if (active) fn()
+      }, ms)
+      timers.push(id)
+    }
 
-    api
-      .getSettings()
-      .then((data) => {
-        if (!active) return
-        setSettings(data)
-        setSettingsError(null)
-      })
-      .catch((loadError) => {
-        if (!active) return
-        setSettingsError({
-          message: loadError?.message || 'Unable to load the cashback form.',
-          isNetwork: Boolean(loadError?.isNetwork),
+    later(() => setSlowLoad(true), 8000)
+
+    const finish = () => {
+      // Always keep at least the short branded splash before showing the page.
+      const elapsed = Date.now() - startedAt
+      later(() => setLoading(false), Math.max(0, SPLASH_MS - elapsed))
+    }
+
+    const attempt = () => {
+      api
+        .getSettings()
+        .then((data) => {
+          if (!active) return
+          setSettings(data)
+          setSettingsError(null)
+          backendReadyRef.current = true
+          setBackendReady(true)
+          finish()
         })
-      })
-      .finally(() => {
-        // Always keep at least the short branded splash before showing the page.
-        const elapsed = Date.now() - startedAt
-        timer = window.setTimeout(() => {
-          if (active) setLoading(false)
-        }, Math.max(0, SPLASH_MS - elapsed))
-      })
+        .catch((loadError) => {
+          if (!active) return
+          const elapsed = Date.now() - startedAt
+          if (loadError?.isNetwork && elapsed + BACKEND_POLL_INTERVAL_MS < BACKEND_READY_TIMEOUT_MS) {
+            later(attempt, BACKEND_POLL_INTERVAL_MS)
+            return
+          }
+          setSettingsError({
+            message: loadError?.message || 'Unable to load the cashback form.',
+            isNetwork: Boolean(loadError?.isNetwork),
+          })
+          finish()
+        })
+    }
+    attempt()
 
     return () => {
       active = false
-      if (timer) window.clearTimeout(timer)
+      timers.forEach((id) => window.clearTimeout(id))
     }
   }, [])
 
+  // Silent backend pre-warm: fire health checks in the background while the
+  // user reads the page, so Render is usually already awake by submit time.
+  // Fully non-blocking — the UI never waits on this.
+  useEffect(() => {
+    const controller = new AbortController()
+    waitForBackendReady({ signal: controller.signal }).then((ready) => {
+      if (ready) {
+        backendReadyRef.current = true
+        setBackendReady(true)
+      }
+    })
+    return () => controller.abort()
+  }, [])
+
+  // Abort any in-flight submit wait if the page unmounts mid-submission.
+  useEffect(() => () => {
+    submitAbortRef.current?.abort()
+  }, [])
+
   const retrySettings = () => {
+    const seq = loadSeqRef.current + 1
+    loadSeqRef.current = seq
     setLoading(true)
+    setSlowLoad(false)
     setError('')
     setSettingsError(null)
     const startedAt = Date.now()
-    api
-      .getSettings()
-      .then((data) => setSettings(data))
-      .catch((loadError) => {
-        setSettingsError({
-          message: loadError?.message || 'Unable to load the cashback form.',
-          isNetwork: Boolean(loadError?.isNetwork),
+    const slowTimer = window.setTimeout(() => {
+      if (loadSeqRef.current === seq) setSlowLoad(true)
+    }, 8000)
+    const attempt = () => {
+      api
+        .getSettings()
+        .then((data) => {
+          if (loadSeqRef.current !== seq) return
+          window.clearTimeout(slowTimer)
+          setSettings(data)
+          setSettingsError(null)
+          backendReadyRef.current = true
+          setBackendReady(true)
+          const elapsed = Date.now() - startedAt
+          window.setTimeout(() => {
+            if (loadSeqRef.current === seq) setLoading(false)
+          }, Math.max(0, SPLASH_MS - elapsed))
         })
-      })
-      .finally(() => {
-        const elapsed = Date.now() - startedAt
-        window.setTimeout(() => setLoading(false), Math.max(0, SPLASH_MS - elapsed))
-      })
+        .catch((loadError) => {
+          if (loadSeqRef.current !== seq) return
+          const elapsed = Date.now() - startedAt
+          if (loadError?.isNetwork && elapsed + BACKEND_POLL_INTERVAL_MS < BACKEND_READY_TIMEOUT_MS) {
+            window.setTimeout(() => {
+              if (loadSeqRef.current === seq) attempt()
+            }, BACKEND_POLL_INTERVAL_MS)
+            return
+          }
+          window.clearTimeout(slowTimer)
+          setSettingsError({
+            message: loadError?.message || 'Unable to load the cashback form.',
+            isNetwork: Boolean(loadError?.isNetwork),
+          })
+          setLoading(false)
+        })
+    }
+    attempt()
   }
 
   const validations = useMemo(() => {
@@ -250,11 +326,36 @@ export default function CustomerForm() {
 
   const submit = async () => {
     setTouched({ customerName: true, orderLast4: true, reviewScreenshot: true, upi: true })
-    if (!canSubmit || busy) return
+    if (!canSubmit || busy || submitGuardRef.current) return
 
+    // Lock the form synchronously: the overlay blocks interaction, the guard
+    // blocks double-clicks, and `busy` disables every control below.
+    submitGuardRef.current = true
     setBusy(true)
+    setSubmitCount((count) => count + 1)
     setError('')
+    const controller = new AbortController()
+    submitAbortRef.current = controller
     try {
+      // Phase 1 — readiness only: poll the lightweight health endpoint until
+      // the backend answers. No user data leaves the device in this phase.
+      const ready = await waitForBackendReady({
+        signal: controller.signal,
+        timeoutMs: backendReady ? 60000 : BACKEND_READY_TIMEOUT_MS,
+      })
+      backendReadyRef.current = ready
+      setBackendReady(ready)
+      if (!ready || controller.signal.aborted) {
+        const timeoutError = new Error(
+          "We're having trouble reaching our servers right now. Your details are still here — please try again in a moment."
+        )
+        timeoutError.isTimeout = true
+        throw timeoutError
+      }
+
+      // Phase 2 — the actual submission, exactly once. createSubmission never
+      // retries internally, so this POST fires a single time: no duplicate
+      // Firestore records or Cloudinary images from a lost response.
       const payload = new FormData()
       payload.set('customerName', form.customerName.trim())
       payload.set('orderLast4', form.orderLast4.trim())
@@ -276,18 +377,32 @@ export default function CustomerForm() {
         },
       })
     } catch (submitError) {
-      setError(submitError.message)
+      if (controller.signal.aborted) return
+      // The form data is deliberately preserved on every failure so the user
+      // can retry safely without re-entering anything.
+      if (submitError?.isTimeout) {
+        setError(submitError.message)
+      } else if (submitError?.isNetwork) {
+        setError("We couldn't submit your details just now. Your information is still here — please try again.")
+      } else {
+        setError(submitError.message)
+      }
     } finally {
+      submitAbortRef.current = null
+      submitGuardRef.current = false
       setBusy(false)
     }
   }
 
   if (loading) {
-    return <OpeningLoader brandName={settings?.businessName || 'Mahalaxmi Multi Cuisine'} />
+    return <OpeningLoader brandName={settings?.businessName || 'Mahalaxmi Multi Cuisine'} extended={slowLoad} />
   }
 
   if (!settings) {
     const isNetwork = Boolean(settingsError?.isNetwork)
+    // Production (remote API) copy stays friendly and non-technical; the
+    // local-dev copy keeps the exact ports/commands for debugging.
+    const isRemoteBackend = Boolean(API_BASE)
     return (
       <div className="relative min-h-screen overflow-hidden surface-warm px-4 py-8 sm:px-6">
         <FloatingFood count={4} opacity={0.14} />
@@ -295,12 +410,14 @@ export default function CustomerForm() {
           <SectionCard className="mt-6 text-center">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-red-50 text-3xl">{isNetwork ? '📡' : '⚠️'}</div>
             <h1 className="mt-4 font-display text-2xl font-extrabold text-cocoa-950 sm:text-3xl">
-              {isNetwork ? 'Cannot reach the backend' : 'Unable to open cashback form'}
+              {isNetwork && isRemoteBackend ? "We're getting things ready" : isNetwork ? 'Cannot reach the backend' : 'Unable to open cashback form'}
             </h1>
             <p className="mt-2 text-sm font-medium leading-relaxed text-cocoa-500 sm:text-base">
-              {isNetwork
-                ? 'The form could not connect to the Mahalaxmi backend API. If you are running locally, start the backend on port 8000 (uvicorn main:app) and make sure you are opening the Vite dev URL on port 5173, then press Retry.'
-                : `Something went wrong while loading the form. ${settingsError?.message || 'Please retry.'}`}
+              {isNetwork && isRemoteBackend
+                ? "We're getting things ready on our end. Please check your connection and press Retry — nothing will be lost."
+                : isNetwork
+                  ? 'The form could not connect to the Mahalaxmi backend API. If you are running locally, start the backend on port 8000 (uvicorn main:app) and make sure you are opening the Vite dev URL on port 5173, then press Retry.'
+                  : `Something went wrong while loading the form. ${settingsError?.message || 'Please retry.'}`}
             </p>
             {error ? <div className="mt-4"><ErrorBox>{error}</ErrorBox></div> : null}
             <button
@@ -319,6 +436,7 @@ export default function CustomerForm() {
 
   return (
     <div className="relative min-h-screen overflow-hidden surface-warm">
+      <SubmitOverlay key={submitCount} visible={busy} />
       <div aria-hidden className="pointer-events-none absolute -left-24 top-0 h-80 w-80 rounded-full bg-brand-200/30 blur-3xl" />
       <div aria-hidden className="pointer-events-none absolute -right-24 top-16 h-80 w-80 rounded-full bg-gold-200/30 blur-3xl" />
       <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-64 bg-[radial-gradient(circle_at_bottom,_rgba(255,196,31,0.12),_transparent_55%)]" />
@@ -473,6 +591,7 @@ export default function CustomerForm() {
                       value={form.reviewScreenshot}
                       onChange={(value) => setField({ reviewScreenshot: value })}
                       onRemove={() => setField({ reviewScreenshot: null })}
+                      disabled={busy}
                     />
                   </div>
                   <p className="mt-2 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">
@@ -491,7 +610,8 @@ export default function CustomerForm() {
                         onChange={(event) => setField({ customerName: event.target.value })}
                         onBlur={() => setTouched((current) => ({ ...current, customerName: true }))}
                         placeholder="Enter the same name used in the app"
-                        className={`w-full rounded-2xl border-2 bg-white py-3.5 pl-11 pr-4 text-sm font-semibold outline-none transition sm:py-4 sm:text-base ${touched.customerName && !validations.nameOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
+                        disabled={busy}
+                        className={`w-full rounded-2xl border-2 bg-white py-3.5 pl-11 pr-4 text-sm font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.customerName && !validations.nameOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                       />
                     </div>
                     <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Use the same customer name shown on your order in Swiggy or Toing.</p>
@@ -506,7 +626,8 @@ export default function CustomerForm() {
                       onBlur={() => setTouched((current) => ({ ...current, orderLast4: true }))}
                       inputMode="numeric"
                       placeholder="e.g. 4582"
-                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-center text-sm font-semibold tracking-[0.28em] outline-none transition sm:py-4 sm:text-base ${touched.orderLast4 && !validations.last4Ok ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
+                      disabled={busy}
+                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-center text-sm font-semibold tracking-[0.28em] outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.orderLast4 && !validations.last4Ok ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                     />
                     <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">You can find it on the package sticker/label or in your ordering app order details.</p>
                     {touched.orderLast4 && !validations.last4Ok ? <p className="mt-1.5 text-xs font-semibold text-red-600 sm:text-sm">Please enter exactly 4 digits.</p> : null}
@@ -519,7 +640,8 @@ export default function CustomerForm() {
                     <button
                       type="button"
                       onClick={() => handlePayoutMethod('upi')}
-                      className={`rounded-[1.7rem] border-2 p-4 text-left transition sm:p-5 ${form.payoutMethod === 'upi' ? 'border-brand-500 bg-brand-50 shadow-pop' : 'border-cocoa-200 bg-white hover:border-brand-300'}`}
+                      disabled={busy}
+                      className={`rounded-[1.7rem] border-2 p-4 text-left transition disabled:opacity-60 sm:p-5 ${form.payoutMethod === 'upi' ? 'border-brand-500 bg-brand-50 shadow-pop' : 'border-cocoa-200 bg-white hover:border-brand-300'}`}
                     >
                       <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-500/10 text-brand-600 sm:h-12 sm:w-12">
                         <CreditCard size={18} />
@@ -530,7 +652,8 @@ export default function CustomerForm() {
                     <button
                       type="button"
                       onClick={() => handlePayoutMethod('qr')}
-                      className={`rounded-[1.7rem] border-2 p-4 text-left transition sm:p-5 ${form.payoutMethod === 'qr' ? 'border-brand-500 bg-brand-50 shadow-pop' : 'border-cocoa-200 bg-white hover:border-brand-300'}`}
+                      disabled={busy}
+                      className={`rounded-[1.7rem] border-2 p-4 text-left transition disabled:opacity-60 sm:p-5 ${form.payoutMethod === 'qr' ? 'border-brand-500 bg-brand-50 shadow-pop' : 'border-cocoa-200 bg-white hover:border-brand-300'}`}
                     >
                       <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gold-500/10 text-gold-600 sm:h-12 sm:w-12">
                         <QrCode size={18} />
@@ -549,7 +672,8 @@ export default function CustomerForm() {
                       onChange={(event) => setField({ upiId: event.target.value })}
                       onBlur={() => setTouched((current) => ({ ...current, upi: true }))}
                       placeholder="yourname@upi"
-                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition sm:py-4 sm:text-base ${touched.upi && !validations.upiBaseOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
+                      disabled={busy}
+                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.upi && !validations.upiBaseOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                     />
                     <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Enter the UPI ID where you want to receive the cashback amount.</p>
                     {touched.upi && !validations.upiBaseOk ? <p className="mt-1.5 text-xs font-semibold text-red-600 sm:text-sm">Please enter a valid UPI ID.</p> : null}
@@ -565,6 +689,7 @@ export default function CustomerForm() {
                         value={form.upiQr}
                         onChange={handleQrUpload}
                         onRemove={handleQrRemove}
+                        disabled={busy}
                       />
                     </div>
                     {touched.upi && !validations.upiBaseOk ? <p className="mt-1.5 text-xs font-semibold text-red-600 sm:text-sm">Please upload your UPI QR image.</p> : null}
@@ -655,7 +780,7 @@ function OfferPill({ icon: Icon, tone, children }) {
   )
 }
 
-function OpeningLoader({ brandName }) {
+function OpeningLoader({ brandName, extended = false }) {
   return (
     <div className="relative min-h-screen overflow-hidden surface-warm">
       <div aria-hidden className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,124,54,0.18),_transparent_36%),radial-gradient(circle_at_bottom,_rgba(255,212,77,0.22),_transparent_32%)]" />
@@ -722,6 +847,11 @@ function OpeningLoader({ brandName }) {
             {brandName}
           </motion.h1>
           <p className="mt-2 text-sm font-semibold text-cocoa-500 sm:text-base">Preparing your cashback form…</p>
+          {extended ? (
+            <p className="mt-1 text-xs font-semibold text-cocoa-400 sm:text-sm">
+              This is taking a little longer than expected. Hang tight!
+            </p>
+          ) : null}
 
           <div className="mt-5 flex items-center justify-center gap-2">
             {[0, 1, 2].map((dot) => (

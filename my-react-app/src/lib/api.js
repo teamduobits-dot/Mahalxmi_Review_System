@@ -74,13 +74,20 @@ function unreachableError(response) {
   return error
 }
 
-async function fetchWithRetry(path, options) {
+async function fetchWithRetry(path, options, { retry = true } = {}) {
   try {
     return await fetch(path, options)
   } catch {
     // Network-level failure (server down, DNS, connection refused). Retry once
     // after a short delay before giving up, so a momentary blip doesn't
-    // disconnect the admin UI.
+    // disconnect the admin UI. Submissions pass retry:false — a retried POST
+    // could create a duplicate Firestore record + Cloudinary image when the
+    // first attempt actually succeeded but its response was lost.
+    if (!retry) {
+      const error = new Error('Cannot reach the server. Make sure the backend is running, then retry.')
+      error.isNetwork = true
+      throw error
+    }
     await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
     try {
       return await fetch(path, options)
@@ -92,9 +99,41 @@ async function fetchWithRetry(path, options) {
   }
 }
 
+// Lightweight backend-readiness probe for Render cold starts. Deliberately
+// separate from apiFetch: no auth token, no retry, short timeout, abortable —
+// safe to call repeatedly while waiting for the backend to wake up. Returns
+// true only when the real API answers with a JSON health payload.
+export async function checkBackendHealth({ timeoutMs = 8000, signal: callerSignal } = {}) {
+  const controller = new AbortController()
+  const onCallerAbort = () => controller.abort()
+  if (callerSignal) {
+    if (callerSignal.aborted) return false
+    callerSignal.addEventListener('abort', onCallerAbort, { once: true })
+  }
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(`${API_BASE}/api/health`, {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: controller.signal,
+    })
+    const contentType = response.headers.get('content-type') || ''
+    if (!response.ok || !contentType.includes('application/json')) return false
+    const data = await response.json().catch(() => null)
+    return Boolean(data && (data.ok === true || data.status === 'ok'))
+  } catch {
+    return false
+  } finally {
+    window.clearTimeout(timer)
+    if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort)
+  }
+}
+
 async function apiFetch(path, options = {}) {
+  const { retry = true, ...fetchOptions } = options
   const token = getToken()
-  const headers = new Headers(options.headers || {})
+  const headers = new Headers(fetchOptions.headers || {})
   if (token) {
     // Send the token two ways: the standard Authorization header and a custom
     // header, because preview gateways/iframe contexts can strip either one.
@@ -112,11 +151,15 @@ async function apiFetch(path, options = {}) {
     target += `${sep}admin_token=${encodeURIComponent(token)}`
   }
 
-  const response = await fetchWithRetry(target, {
-    credentials: 'include',
-    ...options,
-    headers,
-  })
+  const response = await fetchWithRetry(
+    target,
+    {
+      credentials: 'include',
+      ...fetchOptions,
+      headers,
+    },
+    { retry }
+  )
 
   const contentType = response.headers.get('content-type') || ''
   if (!contentType.includes('application/json')) {
@@ -147,10 +190,15 @@ async function apiFetch(path, options = {}) {
 export const api = {
   getSettings: () => apiFetch('/api/settings'),
 
+  // Submitted exactly once: no automatic retry, so a lost response can never
+  // turn into a duplicate Firestore record + Cloudinary image. The form waits
+  // for backend readiness via the lightweight health endpoint first, then
+  // calls this a single time.
   createSubmission: (formData) =>
     apiFetch('/api/submissions', {
       method: 'POST',
       body: formData,
+      retry: false,
     }),
 
   getSubmissionStatus: (reference) =>

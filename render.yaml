@@ -1,0 +1,43 @@
+# Render Blueprint for the Mahalaxmi FastAPI backend.
+#
+#   1. Push this repo to GitHub.
+#   2. Render dashboard → New → Blueprint → select this repo.
+#   3. Fill the `sync: false` secret values when prompted (never commit them).
+#   4. Deploy, then set the frontend VITE_API_BASE_URL to the service URL.
+#
+# Full checklist: RENDER_DEPLOYMENT.md
+services:
+  - type: web
+    name: mahalxmi-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: BACKEND_MODE
+        value: firebase
+      - key: IMAGE_STORAGE
+        value: cloudinary
+      - key: FIREBASE_PROJECT_ID
+        value: mahalxmi-review-system
+      - key: CORS_ORIGINS
+        value: https://mahalxmi-review-system.web.app,https://mahalxmi-review-system.firebaseapp.com
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      # Paste the FULL service-account JSON file contents (single line works).
+      # Firebase console → Project settings → Service accounts → Generate key.
+      - key: FIREBASE_CREDENTIALS_JSON
+        sync: false
