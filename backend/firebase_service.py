@@ -62,6 +62,11 @@ def ensure_firebase() -> None:
                 "Install it with: pip install firebase-admin"
             ) from exc
 
+        # Render has no Application Default Credentials, so production there
+        # supplies the service-account JSON via an env var instead of a file.
+        # Never commit this value — set it in the Render dashboard as a
+        # secret env var only.
+        service_account_json = os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip()
         if not firebase_admin._apps:
             options: dict[str, str] = {}
             project_id = (os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
@@ -70,14 +75,31 @@ def ensure_firebase() -> None:
             bucket = (os.getenv("FIREBASE_STORAGE_BUCKET") or "").strip()
             if bucket:
                 options["storageBucket"] = bucket
+            credentials = None
+            if service_account_json:
+                try:
+                    import json
+
+                    from firebase_admin import credentials as admin_credentials
+
+                    credentials = admin_credentials.Certificate(json.loads(service_account_json))
+                except Exception as exc:
+                    raise RuntimeError(
+                        "FIREBASE_CREDENTIALS_JSON is set but is not valid service-account "
+                        f"JSON. Paste the full JSON file contents. Underlying error: {exc}"
+                    ) from exc
             try:
-                firebase_admin.initialize_app(options=options or None)
+                firebase_admin.initialize_app(credentials, options=options or None)
             except Exception as exc:
                 raise RuntimeError(_ADC_HELP + f" Underlying error: {exc}") from exc
 
         # Fail fast on missing credentials: initialize_app() defers credential
         # lookup, so without this probe the first request would crash deep in
-        # the SDK with an unhelpful DefaultCredentialsError.
+        # the SDK with an unhelpful DefaultCredentialsError. Skipped when an
+        # explicit service-account JSON was provided (Render has no ADC).
+        if service_account_json:
+            _initialized = True
+            return
         try:
             import google.auth
 
