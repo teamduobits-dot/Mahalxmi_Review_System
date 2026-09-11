@@ -33,14 +33,28 @@ intentionally shows no admin link. Admin can:
 - change the admin password (invalidates all other sessions/tokens)
 
 ## Stack
-- **Frontend:** React + Vite + Tailwind CSS
-- **Backend:** FastAPI (Python)
-- **Database:** SQLite (local)
-- **Uploads:** saved locally in `backend/uploads/`
+- **Frontend:** React + Vite + Tailwind CSS (hosted on Firebase Hosting)
+- **Backend:** FastAPI (Python), runs locally or on Google Cloud Run
+- **Two backend modes** (same API, chosen by `BACKEND_MODE`):
+  - `local` — SQLite (`backend/mahalaxmi.db`) + uploads on disk
+    (`backend/uploads/`). Zero-config development. **This is the default
+    everywhere except Cloud Run.**
+  - `firebase` — Cloud Firestore + Firebase Storage (private bucket).
+    Auto-selected on Cloud Run (`K_SERVICE` present). See
+    `CLOUD_DEPLOYMENT.md` for the full Hosting → Cloud Run → Firestore /
+    Storage architecture and step-by-step deployment.
+- Admin image access is private in both modes; in firebase mode the bucket is
+  locked down and images stream through an authenticated admin endpoint.
 
-## Default admin login (local development)
+## Default admin login (local development only)
 - **Email:** `team.duobits@gmail.com`
 - **Password:** `aditya9922`
+
+⚠️ These hard-coded defaults exist **only so local dev works out of the box**.
+They are disabled entirely in production (`APP_ENV=production` refuses to boot
+without `ADMIN_EMAIL`/`ADMIN_PASSWORD`), and the production admin password must
+come from Secret Manager — never from this file or the repo. **Rotate the
+password from the admin Settings screen before/after going live.**
 
 You can change the password from the admin settings screen. **Changing it
 invalidates every outstanding admin token and session** (except the current
@@ -101,65 +115,59 @@ First start creates and seeds `backend/mahalaxmi.db` (admin + settings) automati
 > silently shifting to `5174`/`8001` and breaking the proxy + docs. Kill whatever holds
 > the port (`netstat -ano | findstr :5173` on Windows) and restart.
 
-## Notes for cloud deployment (Firebase recommended)
+## Cloud deployment (Firebase Hosting + Cloud Run)
 
-The frontend is a static bundle and is designed to be hosted on **Firebase
-Hosting**; the backend (FastAPI + SQLite + local uploads) must run on a single
-always-on host (VPS/container) — SQLite + local disk do not survive
-ephemeral/serverless platforms.
+The production architecture is fully serverless — see
+**[`CLOUD_DEPLOYMENT.md`](CLOUD_DEPLOYMENT.md)** for the step-by-step guide
+(Firebase project setup → Cloud Run deploy → Hosting rewrite → secrets →
+budget alerts → 60-day image retention).
 
-**Deploy the frontend to Firebase Hosting:**
+Summary:
 
-```bash
-cd my-react-app
-VITE_API_BASE_URL=https://your-backend-host.com npm run build
-cd ..
-npx firebase deploy --only hosting
-```
+- **Firebase Hosting** serves the React build. `firebase.json` rewrites
+  `/api/**` to the Cloud Run service (`mahalxmi-api`, **before** the SPA
+  fallback), so the deployed site keeps calling same-origin `/api/...` —
+  `VITE_API_BASE_URL` stays empty and there is no CORS at all.
+- **Cloud Run** runs this same FastAPI app from `backend/Dockerfile` with
+  `BACKEND_MODE=firebase` (auto-detected on Cloud Run), which swaps the data
+  layer to **Cloud Firestore** (`submissions` / `admins` / `settings`
+  collections) and **Firebase Storage** (private bucket,
+  `submissions/{uuid}/review.jpg`).
+- **Firestore & Storage rules** (`firestore.rules`, `storage.rules`) deny all
+  direct client access; only the backend's Admin SDK reaches them. Admin
+  image viewing goes through the authenticated endpoint
+  `GET /api/admin/submissions/{id}/files/{kind}` — no public image URLs.
+- Secrets (`ADMIN_PASSWORD`, `SESSION_SECRET`) live in **Secret Manager**,
+  never in git or the frontend.
 
-The root `firebase.json` is preconfigured: it serves `my-react-app/dist`,
-sets `Cache-Control: no-cache` on `index.html`, long-caches the hashed
-assets, and rewrites all routes to the SPA entry. Steps once:
-
-1. `npm i -g firebase-tools` (or use `npx firebase-tools`)
-2. `firebase login` then `firebase init hosting` (accept the existing
-   `firebase.json`, choose the Firebase project, and set the public dir to
-   `my-react-app/dist`)
-3. `firebase deploy --only hosting`
-
-**Point the deployed site at the backend** by building with
-`VITE_API_BASE_URL` set to your backend origin (image URLs `/uploads/...` are
-prefixed automatically). The GitHub Pages workflow
-(`.github/workflows/deploy.yml`) does the same via the `VITE_API_BASE_URL`
-repository variable.
-
-**Run the backend in production:**
+Build + deploy in short:
 
 ```bash
-cd backend
-cp .env.example .env   # then edit: APP_ENV=production, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET
-APP_ENV=production ../.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
+cd my-react-app && npm run build && cd ..   # frontend bundle
+firebase deploy --only hosting,firestore:rules,storage
+gcloud run deploy mahalxmi-api --source backend --region us-central1 ...  # see guide
 ```
 
-`backend/.env` is loaded automatically at startup (real env vars win) and is
-gitignored. Set `CORS_ORIGINS=https://your-project.web.app` so only your
-Firebase domain can call the API from the browser. Put the backend behind
-HTTPS (Caddy/nginx) — production mode enforces secure session cookies and
-HSTS.
-
-> In production the token is sent only via headers/cookie (`?admin_token=`
-> URLs are rejected by the backend and never emitted by the built frontend),
-> login errors are generic, and password change revokes all other tokens.
+> **Legacy alternative (VPS + SQLite):** the old deployment style — build with
+> `VITE_API_BASE_URL=https://your-backend-host.com` and run the backend in
+> local mode behind nginx — still works, since local mode is unchanged. The
+> GitHub Pages workflow (`.github/workflows/deploy.yml`) follows that pattern.
+> It is superseded by the Cloud Run architecture for this project.
 
 ## Operational notes
 - **Always use the Vite dev URL (port 5173) for the UI in local dev.** Port 8000
   serves the *built* `dist/` snapshot, which can be stale.
 - **Rate limits:** login 10 attempts / 15 min / IP; submissions 20 / hour / IP
   (per IP seen by the server). A 429 means wait and retry.
-- **Storage:** uploaded screenshots + QR images live in `backend/uploads/`. The
-  admin dashboard bar and the Storage page track usage against the quota
-  (default 1024 MB, editable in Settings). Deleting a submission frees its
-  files permanently.
+- **Storage:** uploaded screenshots + QR images live in `backend/uploads/`
+  (local mode) or the Firebase Storage bucket (firebase mode). The admin
+  dashboard bar and the Storage page track usage against the quota (default
+  1024 MB, editable in Settings) in both modes. Deleting a submission frees
+  its files permanently.
+- **Abuse protection:** a new claim with the same name + order last-4 as one
+  in the previous 7 days is flagged "Possible duplicate" in the admin panel
+  (never auto-rejected). Order digits alone are not unique, so every
+  submission's real identity is a UUID + generated reference.
 - **A fresh database shows an empty dashboard — that is normal, not an error.**
   New customer submissions appear in the admin table automatically.
 - If the UI shows values that differ from `curl http://127.0.0.1:8000/api/settings`,
@@ -174,7 +182,16 @@ HSTS.
   a fake ₹0 / "paused" page from a proxy error again.
 
 ## Backend files
-- `backend/main.py` — API routes
-- `backend/database.py` — SQLite schema + seeding
+- `backend/main.py` — API routes (mode-agnostic; picks the repository below)
+- `backend/database.py` — SQLite schema/seeding **and** the shared repository
+  interface (local mode)
+- `backend/firestore_service.py` — Cloud Firestore implementation of the same
+  interface (firebase mode)
+- `backend/storage_service.py` — image store: local disk ↔ Firebase Storage
+- `backend/firebase_service.py` — mode detection + Firebase Admin init (ADC)
 - `backend/security.py` — password hashing helpers
 - `backend/requirements.txt` — Python dependencies
+- `backend/Dockerfile` / `backend/.dockerignore` — Cloud Run image
+- Root: `firebase.json` (Hosting + `/api/**` → Cloud Run rewrite),
+  `firestore.rules`, `storage.rules`, `.firebaserc`
+- `tests/` — end-to-end smoke suites for both modes (see `tests/README.md`)

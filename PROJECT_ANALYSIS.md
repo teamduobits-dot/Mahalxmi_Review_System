@@ -4,6 +4,69 @@
 
 ---
 
+## 0A. Session update — 2026-09-11 (cloud migration, branch `arena/01a0904c-mahalxmi-review-system`)
+
+This session migrated the backend from a single-host SQLite + local-disk design
+to the target cloud architecture. Where this section conflicts with anything
+below, this section wins.
+
+**Target architecture (implemented):** Firebase Hosting (React) → `/api/**`
+rewrite → Cloud Run (this FastAPI app) → Cloud Firestore + Firebase Storage
+(private bucket). Full runbook in `CLOUD_DEPLOYMENT.md`.
+
+**Backend changes**
+- New repository abstraction: `main.py` is now mode-agnostic and talks to one
+  interface implemented twice — `database.py` (SQLite, unchanged behavior)
+  and `firestore_service.py` (Cloud Firestore). `firebase_service.py` picks
+  the mode via `BACKEND_MODE` (auto-`firebase` on Cloud Run via `K_SERVICE`).
+  Local development remains zero-config.
+- Firestore layout: `submissions/{uuid}` (reference numbers from a
+  transactional counter doc `meta/counters` → same `MMC-YYYY-NNNNNN` format),
+  `admins/{email}`, `settings/public`, all snake_case + ISO timestamps so the
+  JSON API is byte-identical in both modes.
+- `storage_service.py`: image store abstraction. Firebase mode stores
+  `submissions/{uuid}/review.jpg` / `upi-qr.png` in a **private** bucket
+  (rules deny all client access); images reach the admin only via the new
+  authenticated endpoint `GET /api/admin/submissions/{id}/files/{kind}`
+  (streaming; cookie/header admin auth). Local mode keeps `/uploads/...`.
+- Upload cap lowered 8 MB → **5 MB** (frontend compresses; picker accepts up
+  to 10 MB originals per the plan).
+- **Duplicate flagging:** same name + order-last-4 within 7 days sets
+  `duplicate_of`; the API exposes `flaggedDuplicate`/`duplicateOf` and the
+  admin Dashboard + Detail show a "Possible duplicate" badge (never
+  auto-rejects).
+- Submission IDs in URLs are now strings (integers locally, UUIDs in
+  firebase mode) — frontend unaffected.
+- Production fail-fast keeps working; firebase mode additionally fails fast
+  with actionable guidance when Application Default Credentials are missing.
+
+**Config/deploy artifacts:** `backend/Dockerfile` (+ `.dockerignore`, honors
+`$PORT`), `firebase.json` now rewrites `/api/**` → Cloud Run `mahalxmi-api`
+(us-central1) before the SPA fallback, plus `firestore.rules` /
+`storage.rules` (deny-all) and `.firebaserc`. `backend/.env.example`
+documents the new vars.
+
+**Verified this session:** `tests/smoke_local.py` 48/48 (live SQLite backend:
+auth, submissions, privacy-safe status, duplicate flag, files endpoint,
+storage stats/cleanup, delete-frees-files, password revocation) and
+`tests/smoke_firebase.py` 40/40 (same surface against in-memory Firestore +
+Storage fakes, incl. seeding, counter references, orphan cleanup, streaming).
+Production-gate refusals (missing SESSION_SECRET / ADMIN_*), ADC-missing
+error, frontend `vite build` + `eslint` clean. Docker build not testable in
+this sandbox (no docker) — Cloud Build validates on deploy.
+
+**Not done / follow-ups:** actual `gcloud`/`firebase` deploys (need your
+project credentials), 60-day Storage lifecycle rule (one command in the
+guide), budget alerts, migrating any existing SQLite rows (production DB is
+empty), and the planned extra marketing settings fields (nextOrderDiscount
+etc.) — intentionally deferred; the settings doc is trivially extensible.
+`source.md` was **fully regenerated this session** (2026-09-11) and now
+documents the post-migration architecture, all new files, both runtime modes,
+the complete API, and deployment — it is the recommended first read for any
+AI agent or developer touching this repo.
+
+---
+
 ## 0. Session update — 2026-09-11 (this branch, not yet merged)
 
 A new feature/security session on `arena/01a08cdb-mahalxmi-review-system` changed

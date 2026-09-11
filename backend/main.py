@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
 import threading
 import time
 from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
@@ -15,13 +17,23 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeSerializer
 from starlette.middleware.sessions import SessionMiddleware
 
-from database import DEFAULT_ADMIN_EMAIL, UPLOADS_DIR, get_connection, init_db, row_to_dict, utc_now
+from database import DEFAULT_ADMIN_EMAIL, UPLOADS_DIR, utc_now
+from firebase_service import IS_FIREBASE_MODE
 from security import hash_password, verify_password
+import storage_service as storage
+
+# Data access goes through ONE repository interface. Locally that is SQLite
+# (database.py, zero config); in firebase mode it is Cloud Firestore
+# (firestore_service.py). The routes below never know which one they use.
+if IS_FIREBASE_MODE:
+    import firestore_service as repo
+else:
+    import database as repo
 
 logger = logging.getLogger("mahalaxmi")
 if not logger.handlers:
@@ -146,9 +158,7 @@ async def add_security_headers(request: Request, call_next):
 # Settings payloads
 # ---------------------------------------------------------------------------
 def _settings_row() -> dict:
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM app_settings WHERE id = 1").fetchone()
-    return row_to_dict(row) or {}
+    return repo.get_settings_row() or {}
 
 
 def _public_settings_from(data: dict) -> dict:
@@ -179,9 +189,7 @@ def admin_settings_payload() -> dict:
 # Auth helpers
 # ---------------------------------------------------------------------------
 def _load_admin_row(email: str) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (email,)).fetchone()
-    return row_to_dict(row)
+    return repo.get_admin_by_email(email)
 
 
 def admin_session_payload(email: str) -> dict:
@@ -318,20 +326,9 @@ def verify_google_token(credential: str) -> dict:
 # ---------------------------------------------------------------------------
 # Upload helpers
 # ---------------------------------------------------------------------------
-def detect_image_extension(content: bytes) -> str | None:
-    """Identify the image type from the file's actual bytes (magic numbers).
-
-    Only PNG / JPEG / WebP are accepted; everything else returns None.
-    This — not the client-supplied filename or Content-Type header — is the
-    source of truth, which prevents e.g. uploading `x.html` as "image/png".
-    """
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if content.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
-        return ".webp"
-    return None
+# Duplicate-flag window: same name + same order-last-4 within this many days
+# is flagged for admin review (order digits alone are NOT unique).
+DUPLICATE_WINDOW_DAYS = 7
 
 
 async def validate_image(file: UploadFile | None, field_name: str) -> UploadFile:
@@ -340,85 +337,43 @@ async def validate_image(file: UploadFile | None, field_name: str) -> UploadFile
     return file
 
 
-async def save_upload(file: UploadFile, prefix: str) -> str:
-    content = await file.read()
-    if len(content) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image must be under 8 MB.")
-    extension = detect_image_extension(content)
-    if not extension:
-        raise HTTPException(status_code=400, detail="Only PNG, JPEG or WebP images are accepted.")
-    name = f"{prefix}-{uuid4().hex}{extension}"
-    target = UPLOADS_DIR / name
-    target.write_bytes(content)
-    return f"/uploads/{name}"
-
-
-def _upload_name_from_url(url_path: str | None) -> str | None:
-    """Extract a safe file name from a stored `/uploads/<name>` path."""
-    if not url_path:
-        return None
-    name = url_path.rsplit("/", 1)[-1]
-    if (
-        not name
-        or name in {"", ".", ".."}
-        or name.startswith(".")
-        or "/" in name
-        or "\\" in name
-    ):
-        return None
-    return name
-
-
-def _delete_upload_file(url_path: str | None) -> None:
-    name = _upload_name_from_url(url_path)
-    if not name:
-        return
-    target = (UPLOADS_DIR / name).resolve()
-    try:
-        target.relative_to(UPLOADS_DIR.resolve())
-    except ValueError:
-        return
-    if target.is_file():
-        try:
-            target.unlink()
-        except OSError:
-            logger.warning("Could not delete upload file %s", target)
-
-
-def _submission_upload_paths() -> set[str]:
-    with get_connection() as conn:
-        rows = conn.execute("SELECT review_screenshot_path, upi_qr_path FROM submissions").fetchall()
-    paths: set[str] = set()
-    for row in rows:
-        for value in (row["review_screenshot_path"], row["upi_qr_path"]):
-            if value:
-                paths.add(value)
-    return paths
+def _classify_file(path: str) -> str:
+    """Categorize a stored image by its name for the storage stats card."""
+    base = path.rsplit("/", 1)[-1]
+    if base.startswith("upiqr-") or base.startswith("upi-qr"):
+        return "qr"
+    if base.startswith("review"):
+        return "review"
+    return "other"
 
 
 def compute_storage_stats() -> dict:
-    """Disk usage of backend/uploads + how much of it is referenced/orphaned."""
-    files = [path for path in UPLOADS_DIR.iterdir() if path.is_file()] if UPLOADS_DIR.exists() else []
-    referenced = _submission_upload_paths()
+    """Usage of the image store + how much of it is referenced/orphaned.
+
+    Works for both backends: local mode scans backend/uploads/, firebase mode
+    lists the Firebase Storage bucket.
+    """
+    files = storage.all_files()
+    referenced = repo.get_all_upload_paths()
 
     total_bytes = review_bytes = qr_bytes = other_bytes = orphan_bytes = 0
     review_files = qr_files = other_files = orphan_files = 0
-    for path in files:
-        size = path.stat().st_size
+    for path, size in files:
         total_bytes += size
-        relative = f"/uploads/{path.name}"
-        if relative not in referenced:
+        if path not in referenced:
             orphan_bytes += size
             orphan_files += 1
-        elif path.name.startswith("review-"):
-            review_bytes += size
-            review_files += 1
-        elif path.name.startswith("upiqr-"):
-            qr_bytes += size
-            qr_files += 1
         else:
-            other_bytes += size
-            other_files += 1
+            category = _classify_file(path)
+            if category == "review":
+                review_bytes += size
+                review_files += 1
+            elif category == "qr":
+                qr_bytes += size
+                qr_files += 1
+            else:
+                other_bytes += size
+                other_files += 1
 
     quota_mb = int(_settings_row().get("storage_quota_mb", 1024))
     quota_bytes = quota_mb * 1024 * 1024
@@ -440,31 +395,55 @@ def compute_storage_stats() -> dict:
     }
 
 
+def _image_urls(submission: dict) -> tuple[str | None, str | None]:
+    """Image URLs for the admin panel.
+
+    Local mode keeps the existing public ``/uploads/...`` paths (served by the
+    static mount). Firebase mode has no public file serving — the bucket is
+    private — so the URLs point at the authenticated streaming endpoint, which
+    verifies the admin token before returning the bytes. The frontend renders
+    ``reviewScreenshotUrl`` / ``upiQrUrl`` verbatim, so it needs no change.
+    """
+    review_path = submission.get("review_screenshot_path")
+    qr_path = submission.get("upi_qr_path")
+    if not IS_FIREBASE_MODE:
+        return review_path, qr_path
+    submission_id = submission.get("id")
+    review_url = f"/api/admin/submissions/{submission_id}/files/review" if review_path else None
+    qr_url = f"/api/admin/submissions/{submission_id}/files/upi-qr" if qr_path else None
+    return review_url, qr_url
+
+
 def serialize_submission(submission: dict | None) -> dict:
     if not submission:
         return {}
+    review_url, qr_url = _image_urls(submission)
     return {
         "id": submission["id"],
         "reference": submission["reference"],
         "customerName": submission["customer_name"],
         "orderLast4": submission["order_last4"],
         "customerComment": submission["customer_comment"] or "",
-        "reviewScreenshotUrl": submission["review_screenshot_path"],
+        "reviewScreenshotUrl": review_url,
         "payoutMethod": submission["payout_method"],
         "upiId": submission["upi_id"],
-        "upiQrUrl": submission["upi_qr_path"],
+        "upiQrUrl": qr_url,
         "status": submission["status"],
         "adminNotes": submission["admin_notes"],
-        "createdAt": submission["created_at"],
-        "updatedAt": submission["updated_at"],
-        "approvedAt": submission["approved_at"],
-        "paidAt": submission["paid_at"],
+        "createdAt": submission.get("created_at"),
+        "updatedAt": submission.get("updated_at"),
+        "approvedAt": submission.get("approved_at"),
+        "paidAt": submission.get("paid_at"),
+        # Abuse protection: same name + order digits inside the recent window
+        # flags the claim for manual admin review (never auto-rejected).
+        "flaggedDuplicate": bool(submission.get("duplicate_of")),
+        "duplicateOf": submission.get("duplicate_of") or None,
     }
 
 
 @app.on_event("startup")
 def on_startup() -> None:
-    init_db()
+    repo.init_store()
 
 
 # ---------------------------------------------------------------------------
@@ -512,40 +491,50 @@ async def create_submission(
     else:
         await validate_image(upiQr, "UPI QR image")
 
-    # Only after EVERY form field validated do we read + write files to disk —
-    # an invalid submission must never leave orphan uploads behind.
+    # Only after EVERY form field validated do we read + store the images —
+    # an invalid submission must never leave orphan files behind.
     await validate_image(reviewScreenshot, "Review screenshot")
-    review_path = await save_upload(reviewScreenshot, "review")
+
+    # UUID key for this submission: in firebase mode it becomes the Firestore
+    # document ID and the Storage folder name; never customer data in paths.
+    submission_key = uuid4().hex
+    review_path = storage.save_image(await reviewScreenshot.read(), "review", submission_key)
 
     qr_path = None
     if payoutMethod == "qr":
-        qr_path = await save_upload(upiQr, "upiqr")
+        qr_path = storage.save_image(await upiQr.read(), "upiqr", submission_key)
         final_upi = ""
 
     now = utc_now()
+    since = (datetime.now(timezone.utc) - timedelta(days=DUPLICATE_WINDOW_DAYS)).isoformat()
+    duplicate = repo.find_recent_duplicate(customer_name, last4, since)
     try:
-        with get_connection() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO submissions (
-                    customer_name, order_last4, customer_comment, review_screenshot_path, payout_method,
-                    upi_id, upi_qr_path, status, admin_notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
-                """,
-                (customer_name, last4, customer_comment, review_path, payoutMethod, final_upi, qr_path, now, now),
-            )
-            row_id = cursor.lastrowid
-            reference = f"MMC-{now[:4]}-{row_id:06d}"
-            conn.execute("UPDATE submissions SET reference = ? WHERE id = ?", (reference, row_id))
+        row = repo.create_submission(
+            {
+                "customer_name": customer_name,
+                "order_last4": last4,
+                "customer_comment": customer_comment,
+                "review_screenshot_path": review_path,
+                "payout_method": payoutMethod,
+                "upi_id": final_upi,
+                "upi_qr_path": qr_path,
+                "status": "pending",
+                "admin_notes": "",
+                "created_at": now,
+                "updated_at": now,
+                "duplicate_of": (duplicate or {}).get("reference") or "",
+            },
+            submission_key,
+        )
     except Exception:
         # DB failure — remove the files we just wrote so they don't become orphans.
-        _delete_upload_file(review_path)
-        _delete_upload_file(qr_path)
+        storage.delete_file(review_path)
+        storage.delete_file(qr_path)
         raise
 
     return {
         "message": "Submission received successfully.",
-        "reference": reference,
+        "reference": row["reference"],
         "status": "pending",
     }
 
@@ -558,16 +547,7 @@ def get_submission_status(reference: str) -> dict:
     only non-sensitive fields — no name, UPI ID, screenshots, or admin notes —
     so a leaked (or guessed) reference reveals nothing about payout details.
     """
-    ref = reference.strip().upper()
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT reference, status, created_at, updated_at, approved_at, paid_at
-            FROM submissions WHERE UPPER(reference) = ?
-            """,
-            (ref,),
-        ).fetchone()
-    submission = row_to_dict(row)
+    submission = repo.get_submission_by_reference(reference)
     if not submission:
         raise HTTPException(
             status_code=404,
@@ -634,16 +614,11 @@ def change_password(
     if len(new) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
 
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM admin_users WHERE id = ?", (admin["id"],)).fetchone()
-        current = row_to_dict(row)
-        if not current or not verify_password(currentPassword, current["password_hash"]):
-            raise HTTPException(status_code=400, detail="Current password is incorrect.")
-        next_version = int(current["token_version"]) + 1
-        conn.execute(
-            "UPDATE admin_users SET password_hash = ?, token_version = ?, updated_at = ? WHERE id = ?",
-            (hash_password(new), next_version, utc_now(), admin["id"]),
-        )
+    current = repo.get_admin_by_email(admin["email"])
+    if not current or not verify_password(currentPassword, current["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    next_version = int(current["token_version"]) + 1
+    repo.set_admin_password(admin["email"], hash_password(new), next_version, utc_now())
 
     # Refresh the session with the new version so the current tab stays logged
     # in; every OTHER session/token (old version) is now invalid everywhere.
@@ -681,100 +656,83 @@ def update_admin_settings(request: Request, payload: dict) -> dict:
     campaign_active = 1 if payload.get("campaignActive", True) else 0
     pause_message = str(payload.get("pauseMessage", "")).strip() or "Cashback submissions are paused right now. Please try again shortly."
     success_note = str(payload.get("successNote", "")).strip() or "Cashback will be checked and processed after review."
-    with get_connection() as conn:
-        conn.execute(
-            """
-            UPDATE app_settings
-            SET business_name = ?, cashback_amount = ?, campaign_active = ?,
-                pause_message = ?, success_note = ?, storage_quota_mb = ?, updated_at = ?
-            WHERE id = 1
-            """,
-            (business_name, cashback_amount, campaign_active, pause_message, success_note, storage_quota_mb, utc_now()),
-        )
+    repo.update_settings(
+        {
+            "business_name": business_name,
+            "cashback_amount": cashback_amount,
+            "campaign_active": campaign_active,
+            "pause_message": pause_message,
+            "success_note": success_note,
+            "storage_quota_mb": storage_quota_mb,
+            "updated_at": utc_now(),
+        }
+    )
     return admin_settings_payload()
 
 
 @app.get("/api/admin/submissions")
 def list_submissions(request: Request, search: str = "", status: str = "all") -> list[dict]:
     require_admin(request)
-    query = "SELECT * FROM submissions WHERE 1=1"
-    params: list[str] = []
-    if status != "all":
-        query += " AND status = ?"
-        params.append(status)
-    if search.strip():
-        needle = f"%{search.strip().lower()}%"
-        query += " AND (LOWER(reference) LIKE ? OR LOWER(customer_name) LIKE ? OR LOWER(order_last4) LIKE ? OR LOWER(COALESCE(upi_id, '')) LIKE ?)"
-        params.extend([needle, needle, needle, needle])
-    query += " ORDER BY id DESC"
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [serialize_submission(row_to_dict(row)) for row in rows]
+    return [serialize_submission(row) for row in repo.list_submissions(search, status)]
 
 
 @app.get("/api/admin/submissions/{submission_id}")
-def get_submission(request: Request, submission_id: int) -> dict:
+def get_submission(request: Request, submission_id: str) -> dict:
     require_admin(request)
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,)).fetchone()
-    submission = row_to_dict(row)
+    submission = repo.get_submission_by_id(submission_id)
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found.")
     return serialize_submission(submission)
 
 
 @app.patch("/api/admin/submissions/{submission_id}")
-def update_submission(request: Request, submission_id: int, payload: dict) -> dict:
+def update_submission(request: Request, submission_id: str, payload: dict) -> dict:
     require_admin(request)
     status = payload.get("status")
     if status and status not in ALLOWED_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status.")
 
-    with get_connection() as conn:
-        existing = conn.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,)).fetchone()
-        if not existing:
-            raise HTTPException(status_code=404, detail="Submission not found.")
-        current = row_to_dict(existing)
-        # Only overwrite notes when the client actually sent the field, so a
-        # status-only PATCH never wipes existing admin notes.
-        if payload.get("adminNotes") is None:
-            admin_notes = current.get("admin_notes") or ""
-        else:
-            admin_notes = str(payload["adminNotes"]).strip()
+    current = repo.get_submission_by_id(submission_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    # Only overwrite notes when the client actually sent the field, so a
+    # status-only PATCH never wipes existing admin notes.
+    if payload.get("adminNotes") is None:
+        admin_notes = current.get("admin_notes") or ""
+    else:
+        admin_notes = str(payload["adminNotes"]).strip()
 
-        next_status = status or current["status"]
-        approved_at = current.get("approved_at")
-        paid_at = current.get("paid_at")
-        now = utc_now()
-        if next_status in {"approved", "paid"} and not approved_at:
-            approved_at = now
-        if next_status == "paid" and not paid_at:
-            paid_at = now
+    next_status = status or current["status"]
+    approved_at = current.get("approved_at")
+    paid_at = current.get("paid_at")
+    now = utc_now()
+    if next_status in {"approved", "paid"} and not approved_at:
+        approved_at = now
+    if next_status == "paid" and not paid_at:
+        paid_at = now
 
-        conn.execute(
-            """
-            UPDATE submissions
-            SET status = ?, admin_notes = ?, updated_at = ?, approved_at = ?, paid_at = ?
-            WHERE id = ?
-            """,
-            (next_status, admin_notes, now, approved_at, paid_at, submission_id),
-        )
-        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,)).fetchone()
-    return serialize_submission(row_to_dict(row))
+    row = repo.update_submission_fields(
+        submission_id,
+        {
+            "status": next_status,
+            "admin_notes": admin_notes,
+            "updated_at": now,
+            "approved_at": approved_at,
+            "paid_at": paid_at,
+        },
+    )
+    return serialize_submission(row)
 
 
 @app.delete("/api/admin/submissions/{submission_id}")
-def delete_submission(request: Request, submission_id: int) -> dict:
-    """Permanently delete a submission: DB row AND its uploaded files."""
+def delete_submission(request: Request, submission_id: str) -> dict:
+    """Permanently delete a submission: DB document/row AND its uploaded files."""
     require_admin(request)
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Submission not found.")
-        submission = row_to_dict(row)
-        conn.execute("DELETE FROM submissions WHERE id = ?", (submission_id,))
-    _delete_upload_file(submission.get("review_screenshot_path"))
-    _delete_upload_file(submission.get("upi_qr_path"))
+    submission = repo.delete_submission_row(submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    storage.delete_file(submission.get("review_screenshot_path"))
+    storage.delete_file(submission.get("upi_qr_path"))
     return {
         "ok": True,
         "message": "Submission deleted permanently.",
@@ -782,6 +740,45 @@ def delete_submission(request: Request, submission_id: int) -> dict:
         "reference": submission.get("reference"),
         "freedBytes": compute_storage_stats()["usedBytes"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Private image access (admin only)
+# ---------------------------------------------------------------------------
+# Uploads live in a PRIVATE Firebase Storage bucket (or local disk in dev).
+# They are never exposed via public URLs: the admin panel authenticates with
+# its token/cookie and the backend streams the bytes after verifying access.
+SUBMISSION_FILE_FIELDS = {
+    "review": "review_screenshot_path",
+    "upi-qr": "upi_qr_path",
+}
+
+
+@app.get("/api/admin/submissions/{submission_id}/files/{kind}")
+def submission_file(request: Request, submission_id: str, kind: str):
+    field = SUBMISSION_FILE_FIELDS.get(kind)
+    if not field:
+        raise HTTPException(status_code=404, detail="Not found.")
+    require_admin(request)
+    submission = repo.get_submission_by_id(submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    path = submission.get(field)
+    if not path:
+        raise HTTPException(status_code=404, detail="This submission has no such image.")
+    content = storage.read_file(path)
+    if content is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The image is no longer available (it may have been cleaned up).",
+        )
+    extension = Path(path).suffix.lower()
+    media_type = mimetypes.guess_type(path)[0] or storage.CONTENT_TYPES.get(extension, "application/octet-stream")
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -799,20 +796,15 @@ def cleanup_orphan_uploads(request: Request) -> dict:
     behind by interrupted submissions). Safe: only files under the uploads
     directory are touched, using their exact basename."""
     require_admin(request)
-    referenced = _submission_upload_paths()
+    referenced = repo.get_all_upload_paths()
     removed_bytes = 0
     removed_files = 0
-    for path in UPLOADS_DIR.iterdir():
-        if not path.is_file():
+    for path, size in storage.all_files():
+        if path in referenced:
             continue
-        if f"/uploads/{path.name}" in referenced:
-            continue
-        try:
-            removed_bytes += path.stat().st_size
-            path.unlink()
-            removed_files += 1
-        except OSError:
-            logger.warning("Could not delete orphan upload %s", path)
+        storage.delete_file(path)
+        removed_bytes += size
+        removed_files += 1
     stats = compute_storage_stats()
     return {
         "ok": True,
@@ -826,9 +818,7 @@ def cleanup_orphan_uploads(request: Request) -> dict:
 @app.get("/api/admin/dashboard")
 def dashboard(request: Request) -> dict:
     require_admin(request)
-    with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM submissions ORDER BY id DESC").fetchall()
-    submissions = [serialize_submission(row_to_dict(row)) for row in rows]
+    submissions = [serialize_submission(row) for row in repo.list_submissions()]
     counts = {key: 0 for key in ["pending", "approved", "paid", "rejected"]}
     for item in submissions:
         if item["status"] in counts:

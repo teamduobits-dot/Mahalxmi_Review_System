@@ -21,6 +21,20 @@ export function StatusPill({ status }) {
   )
 }
 
+// Flags a claim that matches an earlier one (same name + order last-4 within
+// the recent window). The backend never auto-rejects on this — it only asks
+// the admin to double-check before paying out.
+export function DuplicateFlag({ ofReference, className = '' }) {
+  return (
+    <span
+      title={`Possible duplicate of ${ofReference || 'an earlier claim'}`}
+      className={`inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-amber-600 ${className}`}
+    >
+      ⚠ Possible duplicate
+    </span>
+  )
+}
+
 export function ErrorBox({ children }) {
   return (
     <div className="rounded-3xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
@@ -101,7 +115,9 @@ export function ImageUpload({
   onChange,
   onRemove,
   disabled = false,
-  maxMB = 8,
+  // Plan: accept originals up to 10 MB; the image is resized/compressed before
+  // upload and the backend hard-caps stored files at 5 MB.
+  maxMB = 10,
 }) {
   const inputRef = useRef(null)
   const [busy, setBusy] = useState(false)
