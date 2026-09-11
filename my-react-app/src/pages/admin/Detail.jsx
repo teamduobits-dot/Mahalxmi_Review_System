@@ -48,7 +48,7 @@ export default function Detail({ settings, onUpdated, onDeleted }) {
     if (!submission || busy) return
     if (
       !window.confirm(
-        `Permanently delete ${submission.reference} (${submission.customerName})?\n\nThis removes the submission AND its uploaded screenshot/QR files from disk. This cannot be undone.`
+        `Permanently delete ${submission.reference} (${submission.customerName})?\n\nThis removes the submission and its local screenshot/QR files. Cloudinary images are retained. This cannot be undone.`
       )
     ) {
       return

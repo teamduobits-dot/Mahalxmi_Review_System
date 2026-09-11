@@ -4,3 +4,9 @@ backend/uploads/
 .venv/
 __pycache__/
 *.pyc
+
+.env
+.env.*
+!.env.example
+node_modules/
+.cache/

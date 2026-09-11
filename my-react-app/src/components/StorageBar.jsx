@@ -15,7 +15,7 @@ export default function StorageBar({ stats, className = '' }) {
     <div className={`rounded-3xl border border-cocoa-100 bg-white p-4 shadow-soft ${className}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-2 text-sm font-extrabold text-cocoa-900">
-          <HardDrive size={16} className="text-brand-600" /> Upload storage
+          <HardDrive size={16} className="text-brand-600" /> Legacy upload storage
         </p>
         <p className={`text-xs font-bold ${stats.overQuota ? 'text-red-600' : 'text-cocoa-500'}`}>
           {formatBytes(stats.usedBytes)} of {formatBytes(stats.quotaBytes)} used ({pct}%)
@@ -37,7 +37,7 @@ export default function StorageBar({ stats, className = '' }) {
           Review screenshots: <span className="text-cocoa-600">{formatBytes(stats.reviewBytes)}</span> · UPI QR:{' '}
           <span className="text-cocoa-600">{formatBytes(stats.qrBytes)}</span>
         </span>
-        <span>{stats.totalFiles} file(s) in uploads</span>
+        <span>{stats.totalFiles} legacy file(s); Cloudinary excluded</span>
       </div>
       {stats.overQuota ? (
         <p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-600">

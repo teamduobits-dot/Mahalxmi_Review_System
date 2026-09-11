@@ -17,10 +17,15 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeSerializer
 from starlette.middleware.sessions import SessionMiddleware
+
+from dotenv import load_dotenv
+
+BACKEND_DIR = Path(__file__).resolve().parent
+load_dotenv(BACKEND_DIR / ".env", override=False)
 
 from database import DEFAULT_ADMIN_EMAIL, UPLOADS_DIR, utc_now
 from firebase_service import IS_FIREBASE_MODE
@@ -67,7 +72,6 @@ except ValueError:
     ADMIN_TOKEN_TTL_SECONDS = 24 * 3600
 
 GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or os.getenv("VITE_GOOGLE_CLIENT_ID") or "").strip()
-BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BACKEND_DIR.parent
 FRONTEND_DIST_DIR = PROJECT_DIR / "my-react-app" / "dist"
 FRONTEND_INDEX = FRONTEND_DIST_DIR / "index.html"
@@ -392,18 +396,13 @@ def compute_storage_stats() -> dict:
         "quotaMb": quota_mb,
         "usedPercent": round(total_bytes * 100 / quota_bytes, 1) if quota_bytes else 0.0,
         "overQuota": total_bytes > quota_bytes,
+        "scope": "firebase" if storage.IMAGE_STORAGE == "firebase" else "local",
+        "cloudinaryIncluded": False,
     }
 
 
 def _image_urls(submission: dict) -> tuple[str | None, str | None]:
-    """Image URLs for the admin panel.
-
-    Local mode keeps the existing public ``/uploads/...`` paths (served by the
-    static mount). Firebase mode has no public file serving — the bucket is
-    private — so the URLs point at the authenticated streaming endpoint, which
-    verifies the admin token before returning the bytes. The frontend renders
-    ``reviewScreenshotUrl`` / ``upiQrUrl`` verbatim, so it needs no change.
-    """
+    """Preserve Cloudinary URLs and legacy local URLs; proxy Firebase objects."""
     review_path = submission.get("review_screenshot_path")
     qr_path = submission.get("upi_qr_path")
     if not IS_FIREBASE_MODE:
@@ -411,6 +410,10 @@ def _image_urls(submission: dict) -> tuple[str | None, str | None]:
     submission_id = submission.get("id")
     review_url = f"/api/admin/submissions/{submission_id}/files/review" if review_path else None
     qr_url = f"/api/admin/submissions/{submission_id}/files/upi-qr" if qr_path else None
+    if review_path and (storage.is_cloudinary_url(review_path) or review_path.startswith("/uploads/")):
+        review_url = review_path
+    if qr_path and (storage.is_cloudinary_url(qr_path) or qr_path.startswith("/uploads/")):
+        qr_url = qr_path
     return review_url, qr_url
 
 
@@ -443,6 +446,7 @@ def serialize_submission(submission: dict | None) -> dict:
 
 @app.on_event("startup")
 def on_startup() -> None:
+    storage.configure_cloudinary()
     repo.init_store()
 
 
@@ -735,7 +739,7 @@ def delete_submission(request: Request, submission_id: str) -> dict:
     storage.delete_file(submission.get("upi_qr_path"))
     return {
         "ok": True,
-        "message": "Submission deleted permanently.",
+        "message": "Submission deleted. Cloudinary assets, if any, are retained.",
         "id": submission_id,
         "reference": submission.get("reference"),
         "freedBytes": compute_storage_stats()["usedBytes"],
@@ -766,6 +770,8 @@ def submission_file(request: Request, submission_id: str, kind: str):
     path = submission.get(field)
     if not path:
         raise HTTPException(status_code=404, detail="This submission has no such image.")
+    if storage.is_cloudinary_url(path):
+        return RedirectResponse(path, headers={"Cache-Control": "private, no-store"})
     content = storage.read_file(path)
     if content is None:
         raise HTTPException(
@@ -841,7 +847,7 @@ def frontend_index():
         if IS_PRODUCTION:
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-                "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; "
+                "font-src https://fonts.gstatic.com; img-src 'self' data: blob: https://res.cloudinary.com; "
                 "connect-src 'self' https://oauth2.googleapis.com; frame-src https://accounts.google.com"
             )
         return response
