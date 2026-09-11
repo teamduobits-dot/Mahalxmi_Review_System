@@ -122,6 +122,16 @@ available: `docker build -t mahalxmi-api backend && docker run --rm -p 8000:8000
 
 ## Phase 7 — Deploy to Cloud Run
 
+**First run the preflight checker** on your machine (logged into gcloud) — it
+verifies every prerequisite above (project, billing, APIs, Firestore, bucket,
+secrets, region sync) and prints the exact deploy command:
+
+```bash
+bash scripts/deploy_preflight.sh
+```
+
+Then deploy:
+
 ```bash
 gcloud run deploy mahalxmi-api \
   --source backend \
