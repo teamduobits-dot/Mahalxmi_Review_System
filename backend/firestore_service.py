@@ -160,8 +160,9 @@ def _next_reference(now_iso: str) -> str:
 
     @fa_firestore.transactional
     def _bump(tx) -> int:
-        snapshot = tx.get(counter_ref)
-        seq = int((snapshot.to_dict() or {}).get("submission_seq", 0)) + 1
+        snapshots = list(tx.get(counter_ref))
+        snapshot = snapshots[0] if snapshots else None
+        seq = int(((snapshot.to_dict() if snapshot else {}) or {}).get("submission_seq", 0)) + 1
         tx.set(counter_ref, {"submission_seq": seq, "updated_at": now_iso}, merge=True)
         return seq
 
