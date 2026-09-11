@@ -1,0 +1,3 @@
+# Install after backend/requirements.txt; these are test-only HTTP clients.
+httpx==0.28.1
+requests>=2.32,<3

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "backend"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ["BACKEND_MODE"] = "firebase"
+os.environ["IMAGE_STORAGE"] = "firebase"  # This suite specifically tests legacy Firebase Storage.
 os.environ.pop("APP_ENV", None)  # dev defaults allowed
 
 # Stub google's transactional decorator before the app imports it: the fake

@@ -58,7 +58,7 @@ export default function Storage({ storage, onRefresh }) {
         </Link>
         <h1 className="mt-2 font-display text-2xl font-extrabold tracking-tight text-cocoa-900">Storage</h1>
         <p className="text-sm font-medium text-cocoa-400">
-          Every customer review screenshot and UPI QR image is stored on the server disk. Track usage here.
+          This page tracks legacy storage only. Cloudinary usage is not included; view it in the Cloudinary console.
         </p>
       </div>
 
@@ -74,7 +74,7 @@ export default function Storage({ storage, onRefresh }) {
       ) : (
         <>
           <SectionCard>
-            <h2 className="font-display text-lg font-extrabold text-cocoa-900">Total upload storage</h2>
+            <h2 className="font-display text-lg font-extrabold text-cocoa-900">Legacy upload storage</h2>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
               <p className="text-2xl font-black text-cocoa-900">{formatBytes(storage.usedBytes)}</p>
               <p className="text-sm font-semibold text-cocoa-400">

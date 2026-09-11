@@ -41,7 +41,7 @@ export default function Dashboard({ submissions, settings, storage, onDeleted, o
   const handleDelete = async (item) => {
     if (
       !window.confirm(
-        `Permanently delete ${item.reference} (${item.customerName})?\n\nThis removes the submission AND its uploaded screenshot/QR files from disk. This cannot be undone.`
+        `Permanently delete ${item.reference} (${item.customerName})?\n\nThis removes the submission and its local screenshot/QR files. Cloudinary images are retained. This cannot be undone.`
       )
     ) {
       return

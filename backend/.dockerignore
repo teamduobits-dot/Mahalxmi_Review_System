@@ -5,3 +5,7 @@ uploads/
 __pycache__/
 *.pyc
 .venv/
+
+.env.*
+!.env.example
+node_modules/

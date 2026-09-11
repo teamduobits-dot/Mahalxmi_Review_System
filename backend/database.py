@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from dotenv import load_dotenv
+
 from security import hash_password
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -14,32 +16,8 @@ DB_PATH = BASE_DIR / "mahalaxmi.db"
 UPLOADS_DIR = BASE_DIR / "uploads"
 
 
-def _load_env_file() -> None:
-    """Load `backend/.env` into os.environ (existing env vars always win).
-
-    The app reads configuration from environment variables; this makes a
-    `backend/.env` file work for local and single-host runs without exporting
-    everything by hand. Format: one `KEY=VALUE` per line, `#` comments.
-    """
-    env_path = BASE_DIR / ".env"
-    if not env_path.is_file():
-        return
-    try:
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip("\"'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-_load_env_file()
+# Load config consistently even when this repository is imported directly.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 # In production (APP_ENV=production) the admin credentials must come from the
 # environment — no hard-coded fallbacks. Local development keeps the

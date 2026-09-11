@@ -1,5 +1,13 @@
 # Mahalaxmi Cashback Upload System
 
+> **Cloudinary migration:** New image uploads now default to Cloudinary, independently
+> of database mode. Existing SQLite records and `/uploads/` images are preserved.
+> Configure the backend credentials before submitting; there is no silent local
+> fallback. See [CLOUDINARY_MIGRATION.md](CLOUDINARY_MIGRATION.md) for current setup,
+> safety constraints, and testing. The older Firebase Storage architecture below
+> remains available with `IMAGE_STORAGE=firebase`; offline disk writes require
+> `IMAGE_STORAGE=local`.
+
 A simplified cashback collection app for Mahalaxmi Multi Cuisine.
 
 ## What it does
