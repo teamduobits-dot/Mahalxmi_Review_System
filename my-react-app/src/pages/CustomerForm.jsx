@@ -83,6 +83,7 @@ export default function CustomerForm() {
   const [jumpMode, setJumpMode] = useState('to-steps')
   const stepsRef = useRef(null)
   const formRef = useRef(null)
+  const detailsRef = useRef(null)
   const scrollAnimationRef = useRef(null)
   // Ref mirrors for async flows (avoid stale closures); the state twin above
   // records readiness for submit-time decisions.
@@ -433,7 +434,14 @@ export default function CustomerForm() {
                       label="Upload submitted review screenshot"
                       hint="Review/rating proof from Swiggy, Zomato or Toing"
                       value={form.reviewScreenshot}
-                      onChange={(value) => setField({ reviewScreenshot: value })}
+                      onChange={(value) => {
+                        setField({ reviewScreenshot: value })
+                        if (value?.file) {
+                          setTouched((current) => ({ ...current, reviewScreenshot: true }))
+                          // Simple auto-scroll to step 2 details for better flow on mobile
+                          setTimeout(() => scrollToSection(detailsRef), 220)
+                        }
+                      }}
                       onRemove={() => setField({ reviewScreenshot: null })}
                       disabled={busy}
                     />
@@ -444,7 +452,7 @@ export default function CustomerForm() {
                   {touched.reviewScreenshot && !validations.screenshotOk ? <p className="mt-2 text-sm font-semibold text-red-600 sm:text-sm">Review screenshot is required.</p> : null}
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div ref={detailsRef} className="grid gap-4 sm:grid-cols-2">
                   <div>
                     <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 2 · Name used for the order *</label>
                     <div className="relative mt-1.5">
@@ -481,7 +489,7 @@ export default function CustomerForm() {
                 <div>
                   <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-sm">Where did you order from? *</label>
                   <p className="mt-1 text-base font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">Select the app you ordered on — this helps us verify your review.</p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="mt-3 flex rounded-full bg-[#E9EBF0] p-1.5 shadow-inner sm:p-2">
                     {ORDERED_APPS.map((app) => (
                       <button
                         key={app.id}
@@ -489,11 +497,9 @@ export default function CustomerForm() {
                         onClick={() => setField({ orderedApp: app.id })}
                         onBlur={() => setTouched((current) => ({ ...current, orderedApp: true }))}
                         disabled={busy}
-                        className={`flex flex-col items-center gap-2 rounded-[1.7rem] border-2 p-4 text-center transition disabled:opacity-60 sm:p-4 ${form.orderedApp === app.id ? 'border-brand-500 bg-brand-50 shadow-pop' : 'border-cocoa-200 bg-white hover:border-brand-300'}`}
+                        className={`flex-1 rounded-full px-2 py-3 text-sm font-extrabold transition sm:py-3.5 sm:text-base ${form.orderedApp === app.id ? 'bg-[#0B0B0F] text-white shadow-card' : 'bg-transparent text-cocoa-700 hover:text-cocoa-900'}`}
                       >
-                        <img src={app.logo} alt={`${app.label} logo`} className="h-12 w-12 rounded-2xl object-contain bg-white shadow-soft p-1 sm:h-14 sm:w-14" />
-                        <span className="text-base font-extrabold text-cocoa-900 sm:text-base">{app.label}</span>
-                        <span className="text-sm font-medium text-cocoa-400 sm:text-sm">{app.id === 'swiggy' ? 'Orange pin' : app.id === 'zomato' ? 'Red brand' : 'Pink on green'}</span>
+                        {app.label}
                       </button>
                     ))}
                   </div>
