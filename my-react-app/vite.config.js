@@ -29,11 +29,16 @@ export default defineConfig(({ mode }) => {
       headers: {
         // Local approximation of the production headers (backend + Firebase
         // Hosting) so CSP problems show up in dev instead of after deploying.
+        // Local approximation of the production CSP. `'unsafe-inline'` on
+        // script-src is REQUIRED in dev only: Vite injects an inline
+        // React-Refresh preamble into index.html, and without it the page
+        // throws ($RefreshReg$ undefined) and renders blank. Production CSP
+        // (served by the backend / Firebase Hosting) stays `script-src 'self'`.
         'Content-Security-Policy':
           "default-src 'self'; img-src 'self' data: blob: https:; " +
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-          "font-src https://fonts.gstatic.com; script-src 'self'; " +
-          "connect-src 'self' ws://localhost:5173 http://127.0.0.1:8000 http://localhost:8000 https://oauth2.googleapis.com; " +
+          "font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; " +
+          "connect-src 'self' ws://localhost:5173 wss://localhost:5173 http://127.0.0.1:8000 http://localhost:8000 https://oauth2.googleapis.com; " +
           "frame-src https://accounts.google.com",
       },
       proxy: {

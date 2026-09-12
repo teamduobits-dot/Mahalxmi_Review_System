@@ -307,22 +307,18 @@ export default function CustomerForm() {
           </motion.div>
 
           <div className="relative mx-auto mt-5 max-w-xl lg:max-w-2xl">
-            <motion.div
+            <div
               aria-hidden
-              animate={{ y: [0, -8, 0], rotate: [-10, 6, -10] }}
-              transition={{ repeat: Infinity, duration: 3.8, ease: 'easeInOut' }}
-              className="absolute -left-1 top-0 hidden rounded-2xl bg-white/85 p-2 shadow-soft sm:block"
+              className="animate-bob absolute -left-1 top-0 hidden rounded-2xl bg-white/85 p-2 shadow-soft will-change-transform sm:block"
             >
               <FoodIcon type="burger" size={26} />
-            </motion.div>
-            <motion.div
+            </div>
+            <div
               aria-hidden
-              animate={{ y: [0, -10, 0], rotate: [8, -8, 8] }}
-              transition={{ repeat: Infinity, duration: 4.2, ease: 'easeInOut', delay: 0.3 }}
-              className="absolute -right-1 top-6 hidden rounded-2xl bg-white/85 p-2 shadow-soft sm:block"
+              className="animate-bob-alt absolute -right-1 top-6 hidden rounded-2xl bg-white/85 p-2 shadow-soft will-change-transform sm:block"
             >
               <FoodIcon type="pizza" size={26} />
-            </motion.div>
+            </div>
 
             <motion.div
               initial={{ opacity: 0, y: 16, scale: 0.98 }}
@@ -383,9 +379,12 @@ export default function CustomerForm() {
                     initial={{ opacity: 0, y: 18, scale: 0.97 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     transition={{ duration: 0.38, delay: 0.08 * index }}
-                    className={`relative w-full max-w-sm overflow-hidden rounded-[1.85rem] border border-white bg-gradient-to-b ${step.tint} p-4 text-center shadow-soft sm:p-5`}
-                    style={{ animation: `float ${8 + index}s ease-in-out ${index * 0.45}s infinite` }}
+                    className="relative w-full max-w-sm"
                   >
+                    <div
+                      className={`animate-float relative overflow-hidden rounded-[1.85rem] border border-white bg-gradient-to-b ${step.tint} p-4 text-center shadow-soft will-change-transform sm:p-5`}
+                      style={{ animationDuration: `${8 + index}s`, animationDelay: `${index * 0.45}s` }}
+                    >
                     <div className="absolute inset-x-6 top-0 h-20 rounded-full bg-white/70 blur-2xl" />
                     <div className="relative mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-soft sm:h-16 sm:w-16">
                       <FoodIcon type={step.icon} size={30} />
@@ -395,6 +394,7 @@ export default function CustomerForm() {
                     </span>
                     <p className="relative mt-3 text-[1rem] font-extrabold leading-6 text-cocoa-900 sm:mt-4 sm:text-lg sm:leading-7">{step.title}</p>
                     <p className="relative mt-1 text-sm font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">{step.subtitle}</p>
+                    </div>
                   </motion.div>
                 ))}
               </div>
@@ -600,37 +600,21 @@ export default function CustomerForm() {
               </Link>
             </div>
 
-            <motion.button
+            <button
               type="button"
               onClick={handleJumpClick}
-              initial={{ opacity: 0, scale: 0.9, y: 18 }}
-              animate={{
-                opacity: 1,
-                scale: 1,
-                y: [0, -4, 0],
-                boxShadow: ['0 10px 30px rgba(239,66,9,0.16)', '0 18px 40px rgba(239,66,9,0.28)', '0 10px 30px rgba(239,66,9,0.16)'],
-              }}
-              transition={{
-                duration: 0.35,
-                y: { repeat: Infinity, duration: 2.8, ease: 'easeInOut' },
-                boxShadow: { repeat: Infinity, duration: 2.6, ease: 'easeInOut' },
-              }}
-              whileHover={{ scale: 1.04 }}
-              whileTap={{ scale: 0.96 }}
-              className={`fixed bottom-4 right-4 z-30 flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full border text-sm font-black leading-none backdrop-blur-sm transition sm:bottom-6 sm:right-6 sm:h-[88px] sm:w-[88px] sm:text-xs ${jumpButtonClass}`}
+              className={`jump-float fixed bottom-4 right-4 z-30 flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full border text-sm font-black leading-none backdrop-blur-sm transition-[filter] duration-200 hover:brightness-110 active:brightness-90 sm:bottom-6 sm:right-6 sm:h-[88px] sm:w-[88px] sm:text-xs ${jumpButtonClass}`}
               aria-label={`Scroll to ${jumpLabel} section`}
             >
-              <motion.span
+              <span
                 key={jumpMode}
-                initial={{ rotate: isBackToSteps ? -100 : 100, scale: 0.85, opacity: 0.65 }}
-                animate={{ rotate: 0, scale: 1, opacity: 1 }}
-                transition={{ duration: 0.28 }}
-                className={`mb-1.5 flex h-8 w-8 items-center justify-center rounded-full ${jumpIconClass}`}
+                className={`jump-icon mb-1.5 flex h-8 w-8 items-center justify-center rounded-full ${jumpIconClass}`}
+                style={{ '--rot': isBackToSteps ? '-100deg' : '100deg' }}
               >
                 <JumpIcon size={16} />
-              </motion.span>
+              </span>
               <span className="tracking-[0.06em]">{jumpLabel}</span>
-            </motion.button>
+            </button>
       </main>
     </div>
   )
@@ -646,98 +630,6 @@ function OfferPill({ icon: Icon, tone, children }) {
   return (
     <div className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-base font-black shadow-soft sm:px-5 sm:py-2.5 sm:text-base ${tones[tone] || tones.brand}`}>
       <Icon size={16} /> {children}
-    </div>
-  )
-}
-
-// Kept for potential future use — not blocking homepage anymore
-// eslint-disable-next-line no-unused-vars
-function OpeningLoader({ brandName, extended = false }) {
-  return (
-    <div className="relative min-h-screen overflow-hidden surface-warm">
-      <div aria-hidden className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,124,54,0.18),_transparent_36%),radial-gradient(circle_at_bottom,_rgba(255,212,77,0.22),_transparent_32%)]" />
-      <FloatingFood count={4} opacity={0.1} />
-
-      <main className="relative z-10 flex min-h-screen items-center justify-center px-5 pt-safe pb-safe">
-        <div className="w-full max-w-sm rounded-[2rem] border border-white/80 bg-white/88 p-6 text-center shadow-card backdrop-blur-md">
-          <div className="relative mx-auto h-44 w-44">
-            <motion.div
-              className="absolute inset-0 rounded-full border border-brand-200/80"
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 14, ease: 'linear' }}
-            />
-            <motion.div
-              className="absolute inset-5 rounded-full border border-gold-200/90"
-              animate={{ rotate: -360 }}
-              transition={{ repeat: Infinity, duration: 10, ease: 'linear' }}
-            />
-
-            <motion.div
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[1.8rem] bg-gradient-to-br from-brand-500 to-gold-400 p-4 shadow-pop"
-              animate={{ y: [0, -8, 0], rotate: [-3, 3, -3], scale: [1, 1.03, 1] }}
-              transition={{ repeat: Infinity, duration: 2.8, ease: 'easeInOut' }}
-            >
-              <FoodIcon type="burger" size={64} />
-            </motion.div>
-
-            <motion.div
-              className="absolute inset-0"
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 12, ease: 'linear' }}
-            >
-              <div className="absolute left-1/2 top-0 -translate-x-1/2 rounded-2xl bg-white p-2 shadow-soft">
-                <FoodIcon type="pizza" size={28} />
-              </div>
-              <div className="absolute bottom-1 left-3 rounded-2xl bg-white p-2 shadow-soft">
-                <FoodIcon type="fries" size={28} />
-              </div>
-              <div className="absolute bottom-3 right-2 rounded-2xl bg-white p-2 shadow-soft">
-                <FoodIcon type="drink" size={28} />
-              </div>
-            </motion.div>
-
-            <motion.div
-              className="absolute inset-6"
-              animate={{ rotate: -360 }}
-              transition={{ repeat: Infinity, duration: 8.5, ease: 'linear' }}
-            >
-              <div className="absolute left-0 top-1/2 -translate-y-1/2 rounded-2xl bg-cream-50 p-2 shadow-soft">
-                <FoodIcon type="taco" size={24} />
-              </div>
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 rounded-2xl bg-cream-50 p-2 shadow-soft">
-                <FoodIcon type="icecream" size={24} />
-              </div>
-            </motion.div>
-          </div>
-
-          <motion.h1
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.45 }}
-            className="mt-4 font-display text-2xl font-black tracking-tight text-cocoa-950"
-          >
-            {brandName}
-          </motion.h1>
-          <p className="mt-2 text-base font-semibold text-cocoa-500 sm:text-base">Preparing your cashback form…</p>
-          {extended ? (
-            <p className="mt-1 text-sm font-semibold text-cocoa-400 sm:text-sm">
-              This is taking a little longer than expected. Hang tight!
-            </p>
-          ) : null}
-
-          <div className="mt-5 flex items-center justify-center gap-2">
-            {[0, 1, 2].map((dot) => (
-              <motion.span
-                key={dot}
-                className="h-2.5 w-2.5 rounded-full bg-brand-500"
-                animate={{ y: [0, -8, 0], opacity: [0.45, 1, 0.45] }}
-                transition={{ repeat: Infinity, duration: 1, delay: dot * 0.18, ease: 'easeInOut' }}
-              />
-            ))}
-          </div>
-
-        </div>
-      </main>
     </div>
   )
 }

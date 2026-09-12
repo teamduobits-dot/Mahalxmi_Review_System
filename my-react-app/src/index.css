@@ -66,6 +66,10 @@
   --animate-spin-slow: spin 14s linear infinite;
   --animate-wiggle: wiggle 2.4s ease-in-out infinite;
   --animate-twinkle: twinkle 2.2s ease-in-out infinite;
+  --animate-bob: bob 3.8s ease-in-out infinite;
+  --animate-bob-alt: bob-alt 4.4s ease-in-out infinite;
+  --animate-jump: jump 2.8s ease-in-out infinite;
+  --animate-dot: dotPulse 1s ease-in-out infinite;
 }
 
 @keyframes float {
@@ -98,6 +102,50 @@
   0%, 100% { transform: scale(1) rotate(0deg); opacity: 0.9; }
   50% { transform: scale(1.25) rotate(12deg); opacity: 0.55; }
 }
+@keyframes bob {
+  0%, 100% { transform: translateY(0) rotate(-4deg); }
+  50% { transform: translateY(-8px) rotate(4deg); }
+}
+@keyframes bob-alt {
+  0%, 100% { transform: translateY(0) rotate(6deg); }
+  50% { transform: translateY(-10px) rotate(-6deg); }
+}
+@keyframes jump {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+@keyframes dotPulse {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50% { transform: translateY(-6px); opacity: 1; }
+}
+@keyframes progressFill {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes iconIn {
+  from { transform: rotate(var(--rot, 100deg)) scale(0.85); opacity: 0.6; }
+  to { transform: rotate(0deg) scale(1); opacity: 1; }
+}
+
+/* ── Splash screen (URL-load intro) ─────────────────────────────────────── */
+.splash-orbiter-a { top: -8px; left: 9%; animation: float 4.6s ease-in-out infinite; }
+.splash-orbiter-b { top: -8px; right: 9%; animation: float 5.4s ease-in-out 0.5s infinite; }
+.splash-orbiter-c { bottom: -4px; left: 13%; animation: float 5s ease-in-out 0.3s infinite; }
+.splash-orbiter-d { bottom: -4px; right: 13%; animation: float 4.8s ease-in-out 0.8s infinite; }
+.splash-progress {
+  transform-origin: left;
+  animation: progressFill 1.5s ease-out forwards;
+}
+
+/* ── Cheap, compositor-only helpers (no box-shadow / paint animation) ───── */
+.jump-float {
+  animation:
+    pop 0.45s cubic-bezier(0.22, 1.2, 0.36, 1) both,
+    jump 2.8s ease-in-out 0.45s infinite;
+}
+.jump-icon {
+  animation: iconIn 0.28s ease-out;
+}
 
 html {
   -webkit-tap-highlight-color: transparent;
@@ -122,9 +170,8 @@ body {
   box-sizing: border-box;
 }
 
-img, svg {
-  backface-visibility: hidden;
-  transform: translateZ(0);
+img {
+  -webkit-user-drag: none;
 }
 
 /* Hide scrollbars but keep scroll (mobile nav rows) */
