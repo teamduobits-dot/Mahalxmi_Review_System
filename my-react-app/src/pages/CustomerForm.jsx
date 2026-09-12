@@ -19,15 +19,13 @@ import FloatingFood from '../components/FloatingFood'
 import FoodIcon from '../components/FoodIcon'
 import SubmitOverlay from '../components/SubmitOverlay'
 import { ErrorBox, ImageUpload, SectionCard, Spinner } from '../components/ui'
-import { API_BASE, api } from '../lib/api'
-import { BACKEND_POLL_INTERVAL_MS, BACKEND_READY_TIMEOUT_MS, waitForBackendReady } from '../lib/backend'
+import { CUSTOMER_CONFIG } from '../config/customerConfig.js'
+import { api } from '../lib/api'
+import { BACKEND_READY_TIMEOUT_MS, waitForBackendReady } from '../lib/backend'
 import { money, validUpiId } from '../lib/format'
 
 const SWIGGY_URL = 'https://www.swiggy.com/'
 const TOING_URL = 'https://www.toingit.com/'
-// Minimum branded splash time before the page appears (kept short so the app
-// still feels fast — it only pads a quick settings load, never blocks a slow one).
-const SPLASH_MS = 900
 
 const INITIAL_FORM = {
   customerName: '',
@@ -64,14 +62,14 @@ const STEP_ITEMS = [
 
 export default function CustomerForm() {
   const navigate = useNavigate()
-  const [settings, setSettings] = useState(null)
-  const [settingsError, setSettingsError] = useState(null)
+  // Static-first: customer page renders immediately from frontend config,
+  // never blocks on GET /api/settings or backend health. Form is always
+  // usable; campaign status is enforced only on POST /api/submissions.
+  const settings = CUSTOMER_CONFIG
   const [form, setForm] = useState(INITIAL_FORM)
   const [touched, setTouched] = useState({})
   const [busy, setBusy] = useState(false)
   const [submitCount, setSubmitCount] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [slowLoad, setSlowLoad] = useState(false)
   const [backendReady, setBackendReady] = useState(false)
   const [error, setError] = useState('')
   const [jumpMode, setJumpMode] = useState('to-steps')
@@ -83,128 +81,11 @@ export default function CustomerForm() {
   const backendReadyRef = useRef(false)
   const submitGuardRef = useRef(false)
   const submitAbortRef = useRef(null)
-  const loadSeqRef = useRef(0)
-
-  // Initial settings load with silent Render cold-start tolerance. Network
-  // failures (backend still waking) retry quietly in the background while the
-  // branded splash stays up; only a real app error — or an exhausted budget —
-  // lands on the error screen with a retry button.
-  useEffect(() => {
-    let active = true
-    const timers = []
-    const startedAt = Date.now()
-    const later = (fn, ms) => {
-      const id = window.setTimeout(() => {
-        if (active) fn()
-      }, ms)
-      timers.push(id)
-    }
-
-    later(() => setSlowLoad(true), 8000)
-
-    const finish = () => {
-      // Always keep at least the short branded splash before showing the page.
-      const elapsed = Date.now() - startedAt
-      later(() => setLoading(false), Math.max(0, SPLASH_MS - elapsed))
-    }
-
-    const attempt = () => {
-      api
-        .getSettings()
-        .then((data) => {
-          if (!active) return
-          setSettings(data)
-          setSettingsError(null)
-          backendReadyRef.current = true
-          setBackendReady(true)
-          finish()
-        })
-        .catch((loadError) => {
-          if (!active) return
-          const elapsed = Date.now() - startedAt
-          if (loadError?.isNetwork && elapsed + BACKEND_POLL_INTERVAL_MS < BACKEND_READY_TIMEOUT_MS) {
-            later(attempt, BACKEND_POLL_INTERVAL_MS)
-            return
-          }
-          setSettingsError({
-            message: loadError?.message || 'Unable to load the cashback form.',
-            isNetwork: Boolean(loadError?.isNetwork),
-          })
-          finish()
-        })
-    }
-    attempt()
-
-    return () => {
-      active = false
-      timers.forEach((id) => window.clearTimeout(id))
-    }
-  }, [])
-
-  // Silent backend pre-warm: fire health checks in the background while the
-  // user reads the page, so Render is usually already awake by submit time.
-  // Fully non-blocking — the UI never waits on this.
-  useEffect(() => {
-    const controller = new AbortController()
-    waitForBackendReady({ signal: controller.signal }).then((ready) => {
-      if (ready) {
-        backendReadyRef.current = true
-        setBackendReady(true)
-      }
-    })
-    return () => controller.abort()
-  }, [])
 
   // Abort any in-flight submit wait if the page unmounts mid-submission.
   useEffect(() => () => {
     submitAbortRef.current?.abort()
   }, [])
-
-  const retrySettings = () => {
-    const seq = loadSeqRef.current + 1
-    loadSeqRef.current = seq
-    setLoading(true)
-    setSlowLoad(false)
-    setError('')
-    setSettingsError(null)
-    const startedAt = Date.now()
-    const slowTimer = window.setTimeout(() => {
-      if (loadSeqRef.current === seq) setSlowLoad(true)
-    }, 8000)
-    const attempt = () => {
-      api
-        .getSettings()
-        .then((data) => {
-          if (loadSeqRef.current !== seq) return
-          window.clearTimeout(slowTimer)
-          setSettings(data)
-          setSettingsError(null)
-          backendReadyRef.current = true
-          setBackendReady(true)
-          const elapsed = Date.now() - startedAt
-          window.setTimeout(() => {
-            if (loadSeqRef.current === seq) setLoading(false)
-          }, Math.max(0, SPLASH_MS - elapsed))
-        })
-        .catch((loadError) => {
-          if (loadSeqRef.current !== seq) return
-          const elapsed = Date.now() - startedAt
-          if (loadError?.isNetwork && elapsed + BACKEND_POLL_INTERVAL_MS < BACKEND_READY_TIMEOUT_MS) {
-            window.setTimeout(() => {
-              if (loadSeqRef.current === seq) attempt()
-            }, BACKEND_POLL_INTERVAL_MS)
-            return
-          }
-          window.clearTimeout(slowTimer)
-          setSettingsError({
-            message: loadError?.message || 'Unable to load the cashback form.',
-            isNetwork: Boolean(loadError?.isNetwork),
-          })
-          setLoading(false)
-        })
-    }
-    attempt()
-  }
 
   const validations = useMemo(() => {
     const nameOk = form.customerName.trim().length >= 2
@@ -275,8 +156,6 @@ export default function CustomerForm() {
   }, [])
 
   useEffect(() => {
-    if (loading) return undefined
-
     const updateJumpMode = () => {
       const triggerLine = window.innerHeight * 0.32
       const stepsTop = stepsRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY
@@ -301,7 +180,7 @@ export default function CustomerForm() {
       window.removeEventListener('scroll', updateJumpMode)
       window.removeEventListener('resize', updateJumpMode)
     }
-  }, [loading])
+  }, [])
 
   const isBackToSteps = jumpMode === 'back-to-steps'
   const isToForm = jumpMode === 'to-form'
@@ -380,7 +259,9 @@ export default function CustomerForm() {
       if (controller.signal.aborted) return
       // The form data is deliberately preserved on every failure so the user
       // can retry safely without re-entering anything.
-      if (submitError?.isTimeout) {
+      if (submitError?.code === 'CAMPAIGN_PAUSED') {
+        setError('This campaign is currently stopped for now. We\'ll start again soon. Stay tuned!')
+      } else if (submitError?.isTimeout) {
         setError(submitError.message)
       } else if (submitError?.isNetwork) {
         setError("We couldn't submit your details just now. Your information is still here — please try again.")
@@ -392,46 +273,6 @@ export default function CustomerForm() {
       submitGuardRef.current = false
       setBusy(false)
     }
-  }
-
-  if (loading) {
-    return <OpeningLoader brandName={settings?.businessName || 'Mahalaxmi Multi Cuisine'} extended={slowLoad} />
-  }
-
-  if (!settings) {
-    const isNetwork = Boolean(settingsError?.isNetwork)
-    // Production (remote API) copy stays friendly and non-technical; the
-    // local-dev copy keeps the exact ports/commands for debugging.
-    const isRemoteBackend = Boolean(API_BASE)
-    return (
-      <div className="relative min-h-screen overflow-hidden surface-warm px-4 py-8 sm:px-6">
-        <FloatingFood count={4} opacity={0.14} />
-        <main className="relative z-10 mx-auto max-w-md pt-safe">
-          <SectionCard className="mt-6 text-center">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-red-50 text-3xl">{isNetwork ? '📡' : '⚠️'}</div>
-            <h1 className="mt-4 font-display text-2xl font-extrabold text-cocoa-950 sm:text-3xl">
-              {isNetwork && isRemoteBackend ? "We're getting things ready" : isNetwork ? 'Cannot reach the backend' : 'Unable to open cashback form'}
-            </h1>
-            <p className="mt-2 text-sm font-medium leading-relaxed text-cocoa-500 sm:text-base">
-              {isNetwork && isRemoteBackend
-                ? "We're getting things ready on our end. Please check your connection and press Retry — nothing will be lost."
-                : isNetwork
-                  ? 'The form could not connect to the Mahalaxmi backend API. If you are running locally, start the backend on port 8000 (uvicorn main:app) and make sure you are opening the Vite dev URL on port 5173, then press Retry.'
-                  : `Something went wrong while loading the form. ${settingsError?.message || 'Please retry.'}`}
-            </p>
-            {error ? <div className="mt-4"><ErrorBox>{error}</ErrorBox></div> : null}
-            <button
-              type="button"
-              onClick={retrySettings}
-              disabled={loading}
-              className="mt-4 w-full rounded-2xl bg-cocoa-900 px-4 py-3.5 text-sm font-extrabold text-white transition hover:bg-cocoa-800 disabled:opacity-60 sm:text-base"
-            >
-              {loading ? 'Checking…' : 'Retry'}
-            </button>
-          </SectionCard>
-        </main>
-      </div>
-    )
   }
 
   return (
@@ -517,14 +358,6 @@ export default function CustomerForm() {
           </motion.div>
         </section>
 
-        {!settings.campaignActive ? (
-          <SectionCard className="mx-auto mt-8 max-w-2xl text-center lg:max-w-3xl">
-            <div className="text-5xl">⏸️</div>
-            <h2 className="mt-4 font-display text-2xl font-extrabold text-cocoa-900 sm:text-3xl">Cashback is paused</h2>
-            <p className="mt-2 text-sm font-medium text-cocoa-500 sm:text-base">{settings.pauseMessage}</p>
-          </SectionCard>
-        ) : (
-          <>
             <SectionCard ref={stepsRef} className="mx-auto mt-7 max-w-2xl p-4 sm:p-6 lg:max-w-3xl">
               <div className="mb-4 text-center">
                 <p className="text-[11px] font-black uppercase tracking-[0.24em] text-brand-600 sm:text-xs">How it works</p>
@@ -759,8 +592,6 @@ export default function CustomerForm() {
               </motion.span>
               <span className="tracking-[0.06em]">{jumpLabel}</span>
             </motion.button>
-          </>
-        )}
       </main>
     </div>
   )
@@ -780,6 +611,8 @@ function OfferPill({ icon: Icon, tone, children }) {
   )
 }
 
+// Kept for potential future use — not blocking homepage anymore
+// eslint-disable-next-line no-unused-vars
 function OpeningLoader({ brandName, extended = false }) {
   return (
     <div className="relative min-h-screen overflow-hidden surface-warm">

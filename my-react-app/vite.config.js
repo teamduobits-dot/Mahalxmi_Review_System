@@ -45,6 +45,10 @@ export default defineConfig(({ mode }) => {
           target: backend,
           changeOrigin: true,
         },
+        '/health': {
+          target: backend,
+          changeOrigin: true,
+        },
       },
     },
     preview: {

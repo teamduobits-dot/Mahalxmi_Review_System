@@ -488,10 +488,8 @@ async def create_submission(
 ):
     submit_limiter.check(client_ip(request), SUBMIT_RATE_LIMIT, SUBMIT_RATE_WINDOW_SECONDS)
 
-    settings = public_settings_payload()
-    if not settings["campaignActive"]:
-        raise HTTPException(status_code=400, detail=settings["pauseMessage"])
-
+    # Order per spec: Validate -> Check campaign BEFORE any side effect
+    # (no reference, no Firestore counter, no Cloudinary when paused).
     customer_name = customerName.strip()
     last4 = orderLast4.strip()
     customer_comment = customerComment.strip()
@@ -510,6 +508,20 @@ async def create_submission(
     # Only after EVERY form field validated do we read + store the images —
     # an invalid submission must never leave orphan files behind.
     await validate_image(reviewScreenshot, "Review screenshot")
+
+    # Campaign status checked ONLY here, after validation, before any storage.
+    # Uses existing Firestore settings structure (reuse campaign_active field)
+    # via public_settings_payload(). Returns 403 with code for frontend.
+    settings = public_settings_payload()
+    if not settings["campaignActive"]:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok": False,
+                "code": "CAMPAIGN_PAUSED",
+                "message": "This campaign is currently stopped for now. We'll start again soon. Stay tuned!",
+            },
+        )
 
     # UUID key for this submission: in firebase mode it becomes the Firestore
     # document ID and the Storage folder name; never customer data in paths.
