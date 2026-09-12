@@ -96,6 +96,7 @@ def init_db() -> None:
                 reference TEXT UNIQUE,
                 customer_name TEXT NOT NULL,
                 order_last4 TEXT NOT NULL,
+                ordered_app TEXT NOT NULL DEFAULT '',
                 customer_comment TEXT NOT NULL DEFAULT '',
                 review_screenshot_path TEXT NOT NULL,
                 payout_method TEXT NOT NULL,
@@ -112,6 +113,7 @@ def init_db() -> None:
             """
         )
         # Lightweight migrations for databases created before these columns existed.
+        ensure_column(conn, "submissions", "ordered_app", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "submissions", "customer_comment", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "submissions", "duplicate_of", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "admin_users", "token_version", "INTEGER NOT NULL DEFAULT 1")
@@ -214,13 +216,14 @@ def create_submission(fields: dict, doc_id: str | None = None) -> dict:
         cursor = conn.execute(
             """
             INSERT INTO submissions (
-                customer_name, order_last4, customer_comment, review_screenshot_path, payout_method,
+                customer_name, order_last4, ordered_app, customer_comment, review_screenshot_path, payout_method,
                 upi_id, upi_qr_path, status, admin_notes, created_at, updated_at, duplicate_of
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fields["customer_name"],
                 fields["order_last4"],
+                fields.get("ordered_app", ""),
                 fields.get("customer_comment", ""),
                 fields["review_screenshot_path"],
                 fields["payout_method"],
@@ -269,9 +272,9 @@ def list_submissions(search: str = "", status: str = "all") -> list[dict]:
         needle = f"%{search.strip().lower()}%"
         query += (
             " AND (LOWER(reference) LIKE ? OR LOWER(customer_name) LIKE ? "
-            "OR LOWER(order_last4) LIKE ? OR LOWER(COALESCE(upi_id, '')) LIKE ?)"
+            "OR LOWER(order_last4) LIKE ? OR LOWER(COALESCE(ordered_app, '')) LIKE ? OR LOWER(COALESCE(upi_id, '')) LIKE ?)"
         )
-        params.extend([needle, needle, needle, needle])
+        params.extend([needle, needle, needle, needle, needle])
     query += " ORDER BY id DESC"
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()

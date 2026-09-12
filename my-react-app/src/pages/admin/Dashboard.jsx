@@ -24,6 +24,7 @@ export default function Dashboard({ submissions, settings, storage, onDeleted, o
         item.reference?.toLowerCase().includes(q) ||
         item.customerName?.toLowerCase().includes(q) ||
         item.orderLast4?.toLowerCase().includes(q) ||
+        item.orderedApp?.toLowerCase().includes(q) ||
         item.upiId?.toLowerCase().includes(q)
       return matchesStatus && matchesSearch
     })
@@ -103,19 +104,20 @@ export default function Dashboard({ submissions, settings, storage, onDeleted, o
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search reference, name, order digits, UPI..."
+              placeholder="Search reference, name, order digits, app, UPI..."
               className="w-full rounded-2xl border border-cocoa-200 bg-cream-50/60 py-2.5 pl-10 pr-3 text-xs font-semibold outline-none transition focus:border-brand-400 focus:ring-4 focus:ring-brand-100"
             />
           </div>
         </div>
 
         <div className="thin-scroll mt-4 overflow-x-auto">
-          <table className="w-full min-w-[820px] text-left text-sm">
+          <table className="w-full min-w-[920px] text-left text-sm">
             <thead>
               <tr className="border-b border-cocoa-100 text-[11px] font-black uppercase tracking-wider text-cocoa-400">
                 <th className="px-3 py-3">Reference</th>
                 <th className="px-3 py-3">Customer</th>
                 <th className="px-3 py-3">Order last 4</th>
+                <th className="px-3 py-3">Ordered via</th>
                 <th className="px-3 py-3">Review</th>
                 <th className="px-3 py-3">Payout</th>
                 <th className="px-3 py-3">Status</th>
@@ -133,6 +135,11 @@ export default function Dashboard({ submissions, settings, storage, onDeleted, o
                   </td>
                   <td className="px-3 py-3 font-semibold text-cocoa-800">{item.customerName}</td>
                   <td className="px-3 py-3 font-mono font-bold text-cocoa-700">{item.orderLast4}</td>
+                  <td className="px-3 py-3">
+                    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${item.orderedApp === 'swiggy' ? 'border-[#ffd9bc] bg-[#fff7f1] text-[#7a3a06]' : item.orderedApp === 'zomato' ? 'border-[#ffc1c1] bg-[#fff1f1] text-[#7a0f0f]' : item.orderedApp === 'toing' ? 'border-[#ffd5eb] bg-[#fff5fb] text-[#7a214e]' : 'border-cocoa-100 bg-cream-50 text-cocoa-400'}`}>
+                      {item.orderedApp ? item.orderedApp.charAt(0).toUpperCase()+item.orderedApp.slice(1) : '—'}
+                    </span>
+                  </td>
                   <td className="px-3 py-3">
                     <ImageCell src={assetUrl(item.reviewScreenshotUrl)} className="h-12 w-12" alt={`${item.customerName} review`} />
                   </td>
@@ -160,7 +167,7 @@ export default function Dashboard({ submissions, settings, storage, onDeleted, o
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-3 py-14 text-center">
+                  <td colSpan={9} className="px-3 py-14 text-center">
                     {submissions.length === 0 ? (
                       <div className="mx-auto max-w-sm">
                         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-cream-100 text-cocoa-300">
