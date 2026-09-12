@@ -39,6 +39,7 @@ _SUBMISSION_DEFAULTS: dict[str, Any] = {
     "reference": "",
     "customer_name": "",
     "order_last4": "",
+    "ordered_app": "",
     "customer_comment": "",
     "review_screenshot_path": None,
     "payout_method": "upi",
@@ -223,6 +224,7 @@ def list_submissions(search: str = "", status: str = "all") -> list[dict]:
                 row.get("reference") or "",
                 row.get("customer_name") or "",
                 row.get("order_last4") or "",
+                row.get("ordered_app") or "",
                 row.get("upi_id") or "",
             )
             if not any(needle in value.lower() for value in haystacks):

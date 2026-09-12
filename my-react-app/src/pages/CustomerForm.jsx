@@ -19,19 +19,25 @@ import FloatingFood from '../components/FloatingFood'
 import FoodIcon from '../components/FoodIcon'
 import SubmitOverlay from '../components/SubmitOverlay'
 import { ErrorBox, ImageUpload, SectionCard, Spinner } from '../components/ui'
-import { API_BASE, api } from '../lib/api'
-import { BACKEND_POLL_INTERVAL_MS, BACKEND_READY_TIMEOUT_MS, waitForBackendReady } from '../lib/backend'
+import { CUSTOMER_CONFIG } from '../config/customerConfig.js'
+import { api } from '../lib/api'
+import { BACKEND_READY_TIMEOUT_MS, waitForBackendReady } from '../lib/backend'
 import { money, validUpiId } from '../lib/format'
 
 const SWIGGY_URL = 'https://www.swiggy.com/'
 const TOING_URL = 'https://www.toingit.com/'
-// Minimum branded splash time before the page appears (kept short so the app
-// still feels fast — it only pads a quick settings load, never blocks a slow one).
-const SPLASH_MS = 900
+const ZOMATO_URL = 'https://www.zomato.com/'
+
+const ORDERED_APPS = [
+  { id: 'swiggy', label: 'Swiggy', href: SWIGGY_URL, logo: '/logos/swiggy.png' },
+  { id: 'zomato', label: 'Zomato', href: ZOMATO_URL, logo: '/logos/zomato.png' },
+  { id: 'toing', label: 'Toing', href: TOING_URL, logo: '/logos/toing.png' },
+]
 
 const INITIAL_FORM = {
   customerName: '',
   orderLast4: '',
+  orderedApp: '',
   payoutMethod: 'upi',
   upiId: '',
   reviewScreenshot: null,
@@ -42,7 +48,7 @@ const STEP_ITEMS = [
   {
     number: '1',
     title: 'Post rating + small comment',
-    subtitle: 'Written comment in Swiggy or Toing is mandatory',
+    subtitle: 'Written comment in Swiggy, Zomato or Toing is mandatory',
     icon: 'pizza',
     tint: 'from-brand-50 to-white',
   },
@@ -64,157 +70,42 @@ const STEP_ITEMS = [
 
 export default function CustomerForm() {
   const navigate = useNavigate()
-  const [settings, setSettings] = useState(null)
-  const [settingsError, setSettingsError] = useState(null)
+  // Static-first: customer page renders immediately from frontend config,
+  // never blocks on GET /api/settings or backend health. Form is always
+  // usable; campaign status is enforced only on POST /api/submissions.
+  const settings = CUSTOMER_CONFIG
   const [form, setForm] = useState(INITIAL_FORM)
   const [touched, setTouched] = useState({})
   const [busy, setBusy] = useState(false)
   const [submitCount, setSubmitCount] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [slowLoad, setSlowLoad] = useState(false)
   const [backendReady, setBackendReady] = useState(false)
   const [error, setError] = useState('')
   const [jumpMode, setJumpMode] = useState('to-steps')
   const stepsRef = useRef(null)
   const formRef = useRef(null)
+  const detailsRef = useRef(null)
   const scrollAnimationRef = useRef(null)
   // Ref mirrors for async flows (avoid stale closures); the state twin above
   // records readiness for submit-time decisions.
   const backendReadyRef = useRef(false)
   const submitGuardRef = useRef(false)
   const submitAbortRef = useRef(null)
-  const loadSeqRef = useRef(0)
-
-  // Initial settings load with silent Render cold-start tolerance. Network
-  // failures (backend still waking) retry quietly in the background while the
-  // branded splash stays up; only a real app error — or an exhausted budget —
-  // lands on the error screen with a retry button.
-  useEffect(() => {
-    let active = true
-    const timers = []
-    const startedAt = Date.now()
-    const later = (fn, ms) => {
-      const id = window.setTimeout(() => {
-        if (active) fn()
-      }, ms)
-      timers.push(id)
-    }
-
-    later(() => setSlowLoad(true), 8000)
-
-    const finish = () => {
-      // Always keep at least the short branded splash before showing the page.
-      const elapsed = Date.now() - startedAt
-      later(() => setLoading(false), Math.max(0, SPLASH_MS - elapsed))
-    }
-
-    const attempt = () => {
-      api
-        .getSettings()
-        .then((data) => {
-          if (!active) return
-          setSettings(data)
-          setSettingsError(null)
-          backendReadyRef.current = true
-          setBackendReady(true)
-          finish()
-        })
-        .catch((loadError) => {
-          if (!active) return
-          const elapsed = Date.now() - startedAt
-          if (loadError?.isNetwork && elapsed + BACKEND_POLL_INTERVAL_MS < BACKEND_READY_TIMEOUT_MS) {
-            later(attempt, BACKEND_POLL_INTERVAL_MS)
-            return
-          }
-          setSettingsError({
-            message: loadError?.message || 'Unable to load the cashback form.',
-            isNetwork: Boolean(loadError?.isNetwork),
-          })
-          finish()
-        })
-    }
-    attempt()
-
-    return () => {
-      active = false
-      timers.forEach((id) => window.clearTimeout(id))
-    }
-  }, [])
-
-  // Silent backend pre-warm: fire health checks in the background while the
-  // user reads the page, so Render is usually already awake by submit time.
-  // Fully non-blocking — the UI never waits on this.
-  useEffect(() => {
-    const controller = new AbortController()
-    waitForBackendReady({ signal: controller.signal }).then((ready) => {
-      if (ready) {
-        backendReadyRef.current = true
-        setBackendReady(true)
-      }
-    })
-    return () => controller.abort()
-  }, [])
 
   // Abort any in-flight submit wait if the page unmounts mid-submission.
   useEffect(() => () => {
     submitAbortRef.current?.abort()
   }, [])
 
-  const retrySettings = () => {
-    const seq = loadSeqRef.current + 1
-    loadSeqRef.current = seq
-    setLoading(true)
-    setSlowLoad(false)
-    setError('')
-    setSettingsError(null)
-    const startedAt = Date.now()
-    const slowTimer = window.setTimeout(() => {
-      if (loadSeqRef.current === seq) setSlowLoad(true)
-    }, 8000)
-    const attempt = () => {
-      api
-        .getSettings()
-        .then((data) => {
-          if (loadSeqRef.current !== seq) return
-          window.clearTimeout(slowTimer)
-          setSettings(data)
-          setSettingsError(null)
-          backendReadyRef.current = true
-          setBackendReady(true)
-          const elapsed = Date.now() - startedAt
-          window.setTimeout(() => {
-            if (loadSeqRef.current === seq) setLoading(false)
-          }, Math.max(0, SPLASH_MS - elapsed))
-        })
-        .catch((loadError) => {
-          if (loadSeqRef.current !== seq) return
-          const elapsed = Date.now() - startedAt
-          if (loadError?.isNetwork && elapsed + BACKEND_POLL_INTERVAL_MS < BACKEND_READY_TIMEOUT_MS) {
-            window.setTimeout(() => {
-              if (loadSeqRef.current === seq) attempt()
-            }, BACKEND_POLL_INTERVAL_MS)
-            return
-          }
-          window.clearTimeout(slowTimer)
-          setSettingsError({
-            message: loadError?.message || 'Unable to load the cashback form.',
-            isNetwork: Boolean(loadError?.isNetwork),
-          })
-          setLoading(false)
-        })
-    }
-    attempt()
-  }
-
   const validations = useMemo(() => {
     const nameOk = form.customerName.trim().length >= 2
     const last4Ok = /^\d{4}$/.test(form.orderLast4.trim())
+    const orderedAppOk = ['swiggy', 'zomato', 'toing'].includes(form.orderedApp)
     const screenshotOk = Boolean(form.reviewScreenshot?.file)
     const upiBaseOk = form.payoutMethod === 'upi' ? validUpiId(form.upiId.trim()) : Boolean(form.upiQr?.file)
-    return { nameOk, last4Ok, screenshotOk, upiBaseOk }
+    return { nameOk, last4Ok, orderedAppOk, screenshotOk, upiBaseOk }
   }, [form])
 
-  const canSubmit = validations.nameOk && validations.last4Ok && validations.screenshotOk && validations.upiBaseOk
+  const canSubmit = validations.nameOk && validations.last4Ok && validations.orderedAppOk && validations.screenshotOk && validations.upiBaseOk
 
   const setField = (patch) => setForm((current) => ({ ...current, ...patch }))
 
@@ -275,8 +166,6 @@ export default function CustomerForm() {
   }, [])
 
   useEffect(() => {
-    if (loading) return undefined
-
     const updateJumpMode = () => {
       const triggerLine = window.innerHeight * 0.32
       const stepsTop = stepsRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY
@@ -301,7 +190,7 @@ export default function CustomerForm() {
       window.removeEventListener('scroll', updateJumpMode)
       window.removeEventListener('resize', updateJumpMode)
     }
-  }, [loading])
+  }, [])
 
   const isBackToSteps = jumpMode === 'back-to-steps'
   const isToForm = jumpMode === 'to-form'
@@ -325,7 +214,7 @@ export default function CustomerForm() {
   }
 
   const submit = async () => {
-    setTouched({ customerName: true, orderLast4: true, reviewScreenshot: true, upi: true })
+    setTouched({ customerName: true, orderLast4: true, orderedApp: true, reviewScreenshot: true, upi: true })
     if (!canSubmit || busy || submitGuardRef.current) return
 
     // Lock the form synchronously: the overlay blocks interaction, the guard
@@ -359,6 +248,7 @@ export default function CustomerForm() {
       const payload = new FormData()
       payload.set('customerName', form.customerName.trim())
       payload.set('orderLast4', form.orderLast4.trim())
+      payload.set('orderedApp', form.orderedApp)
       payload.set('payoutMethod', form.payoutMethod)
       payload.set('reviewScreenshot', form.reviewScreenshot.file)
       if (form.payoutMethod === 'upi') payload.set('upiId', form.upiId.trim())
@@ -380,7 +270,9 @@ export default function CustomerForm() {
       if (controller.signal.aborted) return
       // The form data is deliberately preserved on every failure so the user
       // can retry safely without re-entering anything.
-      if (submitError?.isTimeout) {
+      if (submitError?.code === 'CAMPAIGN_PAUSED') {
+        setError('This campaign is currently stopped for now. We\'ll start again soon. Stay tuned!')
+      } else if (submitError?.isTimeout) {
         setError(submitError.message)
       } else if (submitError?.isNetwork) {
         setError("We couldn't submit your details just now. Your information is still here — please try again.")
@@ -392,46 +284,6 @@ export default function CustomerForm() {
       submitGuardRef.current = false
       setBusy(false)
     }
-  }
-
-  if (loading) {
-    return <OpeningLoader brandName={settings?.businessName || 'Mahalaxmi Multi Cuisine'} extended={slowLoad} />
-  }
-
-  if (!settings) {
-    const isNetwork = Boolean(settingsError?.isNetwork)
-    // Production (remote API) copy stays friendly and non-technical; the
-    // local-dev copy keeps the exact ports/commands for debugging.
-    const isRemoteBackend = Boolean(API_BASE)
-    return (
-      <div className="relative min-h-screen overflow-hidden surface-warm px-4 py-8 sm:px-6">
-        <FloatingFood count={4} opacity={0.14} />
-        <main className="relative z-10 mx-auto max-w-md pt-safe">
-          <SectionCard className="mt-6 text-center">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-red-50 text-3xl">{isNetwork ? '📡' : '⚠️'}</div>
-            <h1 className="mt-4 font-display text-2xl font-extrabold text-cocoa-950 sm:text-3xl">
-              {isNetwork && isRemoteBackend ? "We're getting things ready" : isNetwork ? 'Cannot reach the backend' : 'Unable to open cashback form'}
-            </h1>
-            <p className="mt-2 text-sm font-medium leading-relaxed text-cocoa-500 sm:text-base">
-              {isNetwork && isRemoteBackend
-                ? "We're getting things ready on our end. Please check your connection and press Retry — nothing will be lost."
-                : isNetwork
-                  ? 'The form could not connect to the Mahalaxmi backend API. If you are running locally, start the backend on port 8000 (uvicorn main:app) and make sure you are opening the Vite dev URL on port 5173, then press Retry.'
-                  : `Something went wrong while loading the form. ${settingsError?.message || 'Please retry.'}`}
-            </p>
-            {error ? <div className="mt-4"><ErrorBox>{error}</ErrorBox></div> : null}
-            <button
-              type="button"
-              onClick={retrySettings}
-              disabled={loading}
-              className="mt-4 w-full rounded-2xl bg-cocoa-900 px-4 py-3.5 text-sm font-extrabold text-white transition hover:bg-cocoa-800 disabled:opacity-60 sm:text-base"
-            >
-              {loading ? 'Checking…' : 'Retry'}
-            </button>
-          </SectionCard>
-        </main>
-      </div>
-    )
   }
 
   return (
@@ -448,7 +300,7 @@ export default function CustomerForm() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.35 }}
-            className="inline-flex items-center gap-2 rounded-full border border-white/80 bg-white/90 px-4 py-2 text-xs font-extrabold text-cocoa-900 shadow-soft backdrop-blur-sm sm:text-sm"
+            className="inline-flex items-center gap-2 rounded-full border border-white/80 bg-white/90 px-4 py-2 text-sm font-extrabold text-cocoa-900 shadow-soft backdrop-blur-sm sm:text-sm"
           >
             <Sparkles size={14} className="text-brand-500" />
             {settings.businessName}
@@ -478,7 +330,7 @@ export default function CustomerForm() {
               transition={{ duration: 0.45, delay: 0.05 }}
               className="rounded-[2rem] border border-white/75 bg-white/72 px-4 py-5 shadow-card backdrop-blur-sm sm:px-6 sm:py-6"
             >
-              <div className="mx-auto mb-3 flex w-fit items-center gap-2 rounded-full bg-brand-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-brand-700 sm:text-xs">
+              <div className="mx-auto mb-3 flex w-fit items-center gap-2 rounded-full bg-brand-50 px-3 py-1.5 text-sm font-black uppercase tracking-[0.16em] text-brand-700 sm:text-xs">
                 <Gift size={14} /> Genuine review reward
               </div>
               <h1 className="font-display text-[2rem] font-black leading-[1.05] tracking-tight text-cocoa-950 sm:text-5xl">
@@ -493,9 +345,9 @@ export default function CustomerForm() {
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.42, delay: 0.12 }}
-            className="mx-auto mt-4 max-w-xl text-sm font-medium leading-7 text-cocoa-600 sm:text-base sm:leading-8 lg:max-w-2xl lg:text-lg"
+            className="mx-auto mt-4 max-w-xl text-base font-medium leading-7 text-cocoa-600 sm:text-base sm:leading-8 lg:max-w-2xl lg:text-lg"
           >
-            Share your genuine experience and enjoy {money(settings.cashbackAmount)} cashback today, plus ₹40 OFF on your next order above ₹499. First post your real rating and a small written comment in Swiggy or Toing, then upload that submitted review screenshot here.
+            Share your genuine experience and enjoy {money(settings.cashbackAmount)} cashback today, plus ₹40 OFF on your next order above ₹499. First post your real rating and a small written comment in Swiggy, Zomato or Toing, then upload that submitted review screenshot here.
           </motion.p>
 
           <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
@@ -510,26 +362,18 @@ export default function CustomerForm() {
             transition={{ duration: 0.4, delay: 0.18 }}
             className="mx-auto mt-4 max-w-xl rounded-[1.6rem] border border-amber-200 bg-amber-50/90 px-4 py-3 text-left shadow-soft sm:px-5 sm:py-4 lg:max-w-2xl"
           >
-            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-700 sm:text-xs">Important for cashback</p>
-            <p className="mt-1 text-sm font-semibold leading-6 text-amber-900 sm:text-base sm:leading-7">
+            <p className="text-sm font-black uppercase tracking-[0.18em] text-amber-700 sm:text-xs">Important for cashback</p>
+            <p className="mt-1 text-base font-semibold leading-6 text-amber-900 sm:text-base sm:leading-7">
               A small written comment in the ordering app is mandatory. If the screenshot shows only a rating and no written comment, cashback will not be eligible.
             </p>
           </motion.div>
         </section>
 
-        {!settings.campaignActive ? (
-          <SectionCard className="mx-auto mt-8 max-w-2xl text-center lg:max-w-3xl">
-            <div className="text-5xl">⏸️</div>
-            <h2 className="mt-4 font-display text-2xl font-extrabold text-cocoa-900 sm:text-3xl">Cashback is paused</h2>
-            <p className="mt-2 text-sm font-medium text-cocoa-500 sm:text-base">{settings.pauseMessage}</p>
-          </SectionCard>
-        ) : (
-          <>
             <SectionCard ref={stepsRef} className="mx-auto mt-7 max-w-2xl p-4 sm:p-6 lg:max-w-3xl">
               <div className="mb-4 text-center">
-                <p className="text-[11px] font-black uppercase tracking-[0.24em] text-brand-600 sm:text-xs">How it works</p>
+                <p className="text-sm font-black uppercase tracking-[0.24em] text-brand-600 sm:text-xs">How it works</p>
                 <h2 className="mt-2 font-display text-2xl font-extrabold text-cocoa-950 sm:text-3xl">3 easy steps</h2>
-                <p className="mt-1 text-sm font-medium text-cocoa-500 sm:text-base">Quick, clear and easy on mobile.</p>
+                <p className="mt-1 text-base font-medium text-cocoa-500 sm:text-base">Quick, clear and easy on mobile.</p>
               </div>
 
               <div className="grid justify-items-center gap-3 sm:grid-cols-3 sm:gap-4">
@@ -546,11 +390,11 @@ export default function CustomerForm() {
                     <div className="relative mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-soft sm:h-16 sm:w-16">
                       <FoodIcon type={step.icon} size={30} />
                     </div>
-                    <span className="relative mt-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-brand-500 text-sm font-black text-white shadow-soft sm:h-11 sm:w-11 sm:text-base">
+                    <span className="relative mt-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-brand-500 text-base font-black text-white shadow-soft sm:h-11 sm:w-11 sm:text-base">
                       {step.number}
                     </span>
                     <p className="relative mt-3 text-[1rem] font-extrabold leading-6 text-cocoa-900 sm:mt-4 sm:text-lg sm:leading-7">{step.title}</p>
-                    <p className="relative mt-1 text-xs font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">{step.subtitle}</p>
+                    <p className="relative mt-1 text-sm font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">{step.subtitle}</p>
                   </motion.div>
                 ))}
               </div>
@@ -563,7 +407,7 @@ export default function CustomerForm() {
                 </span>
                 <div>
                   <h2 className="font-display text-xl font-extrabold text-cocoa-950 sm:text-2xl">Claim your cashback</h2>
-                  <p className="mt-1 text-sm font-medium leading-6 text-cocoa-500 sm:text-base sm:leading-7">
+                  <p className="mt-1 text-base font-medium leading-6 text-cocoa-500 sm:text-base sm:leading-7">
                     Upload the review proof, add order details and get cashback in one smooth flow.
                   </p>
                 </div>
@@ -573,13 +417,14 @@ export default function CustomerForm() {
                 <div className="rounded-[1.75rem] border border-cocoa-100 bg-cream-50/85 p-4 shadow-soft sm:p-5">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="text-center sm:text-left">
-                      <p className="text-[11px] font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 1 · Review screenshot *</p>
-                      <p className="mt-1 text-xs font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">
+                      <p className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 1 · Review screenshot *</p>
+                      <p className="mt-1 text-sm font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">
                         Upload the submitted review screenshot from the same app where you placed the order. The screenshot must clearly show your rating and small written comment.
                       </p>
                     </div>
-                    <div className="grid gap-2 sm:min-w-[255px]">
+                    <div className="grid gap-2 sm:min-w-[280px]">
                       <PlatformCard brand="swiggy" label="Open Swiggy" href={SWIGGY_URL} />
+                      <PlatformCard brand="zomato" label="Open Zomato" href={ZOMATO_URL} />
                       <PlatformCard brand="toing" label="Open Toing" href={TOING_URL} />
                     </div>
                   </div>
@@ -587,22 +432,29 @@ export default function CustomerForm() {
                   <div className="mt-4">
                     <ImageUpload
                       label="Upload submitted review screenshot"
-                      hint="Review/rating proof from Swiggy or Toing"
+                      hint="Review/rating proof from Swiggy, Zomato or Toing"
                       value={form.reviewScreenshot}
-                      onChange={(value) => setField({ reviewScreenshot: value })}
+                      onChange={(value) => {
+                        setField({ reviewScreenshot: value })
+                        if (value?.file) {
+                          setTouched((current) => ({ ...current, reviewScreenshot: true }))
+                          // Simple auto-scroll to step 2 details for better flow on mobile
+                          setTimeout(() => scrollToSection(detailsRef), 220)
+                        }
+                      }}
                       onRemove={() => setField({ reviewScreenshot: null })}
                       disabled={busy}
                     />
                   </div>
-                  <p className="mt-2 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">
+                  <p className="mt-2 text-sm font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">
                     Your written review/comment must already be posted in the ordering app and visible in the screenshot. No separate comment is needed here, but cashback is valid only when the ordering app comment is visible.
                   </p>
-                  {touched.reviewScreenshot && !validations.screenshotOk ? <p className="mt-2 text-xs font-semibold text-red-600 sm:text-sm">Review screenshot is required.</p> : null}
+                  {touched.reviewScreenshot && !validations.screenshotOk ? <p className="mt-2 text-sm font-semibold text-red-600 sm:text-sm">Review screenshot is required.</p> : null}
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div ref={detailsRef} className="grid gap-4 sm:grid-cols-2">
                   <div>
-                    <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 2 · Name used for the order *</label>
+                    <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 2 · Name used for the order *</label>
                     <div className="relative mt-1.5">
                       <UserRound size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-cocoa-300" />
                       <input
@@ -611,15 +463,15 @@ export default function CustomerForm() {
                         onBlur={() => setTouched((current) => ({ ...current, customerName: true }))}
                         placeholder="Enter the same name used in the app"
                         disabled={busy}
-                        className={`w-full rounded-2xl border-2 bg-white py-3.5 pl-11 pr-4 text-sm font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.customerName && !validations.nameOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
+                        className={`w-full rounded-2xl border-2 bg-white py-3.5 pl-11 pr-4 text-base font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.customerName && !validations.nameOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                       />
                     </div>
-                    <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Use the same customer name shown on your order in Swiggy or Toing.</p>
-                    {touched.customerName && !validations.nameOk ? <p className="mt-1.5 text-xs font-semibold text-red-600 sm:text-sm">Please enter the order name.</p> : null}
+                    <p className="mt-1.5 text-sm font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Use the same customer name shown on your order in Swiggy, Zomato or Toing.</p>
+                    {touched.customerName && !validations.nameOk ? <p className="mt-1.5 text-sm font-semibold text-red-600 sm:text-sm">Please enter the order name.</p> : null}
                   </div>
 
                   <div>
-                    <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 2 · Order ID last 4 digits *</label>
+                    <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 2 · Order ID last 4 digits *</label>
                     <input
                       value={form.orderLast4}
                       onChange={(event) => setField({ orderLast4: event.target.value.replace(/\D/g, '').slice(0, 4) })}
@@ -627,15 +479,35 @@ export default function CustomerForm() {
                       inputMode="numeric"
                       placeholder="e.g. 4582"
                       disabled={busy}
-                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-center text-sm font-semibold tracking-[0.28em] outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.orderLast4 && !validations.last4Ok ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
+                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-center text-base font-semibold tracking-[0.28em] outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.orderLast4 && !validations.last4Ok ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                     />
-                    <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">You can find it on the package sticker/label or in your ordering app order details.</p>
-                    {touched.orderLast4 && !validations.last4Ok ? <p className="mt-1.5 text-xs font-semibold text-red-600 sm:text-sm">Please enter exactly 4 digits.</p> : null}
+                    <p className="mt-1.5 text-sm font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">You can find it on the package sticker/label or in your ordering app order details.</p>
+                    {touched.orderLast4 && !validations.last4Ok ? <p className="mt-1.5 text-sm font-semibold text-red-600 sm:text-sm">Please enter exactly 4 digits.</p> : null}
                   </div>
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 3 · Receive cashback via *</label>
+                  <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-sm">Where did you order from? *</label>
+                  <p className="mt-1 text-base font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">Select the app you ordered on — this helps us verify your review.</p>
+                  <div className="mt-3 flex rounded-full bg-[#E9EBF0] p-1.5 shadow-inner sm:p-2">
+                    {ORDERED_APPS.map((app) => (
+                      <button
+                        key={app.id}
+                        type="button"
+                        onClick={() => setField({ orderedApp: app.id })}
+                        onBlur={() => setTouched((current) => ({ ...current, orderedApp: true }))}
+                        disabled={busy}
+                        className={`flex-1 rounded-full px-2 py-3 text-sm font-extrabold transition sm:py-3.5 sm:text-base ${form.orderedApp === app.id ? 'bg-[#0B0B0F] text-white shadow-card' : 'bg-transparent text-cocoa-700 hover:text-cocoa-900'}`}
+                      >
+                        {app.label}
+                      </button>
+                    ))}
+                  </div>
+                  {touched.orderedApp && !validations.orderedAppOk ? <p className="mt-2 text-base font-semibold text-red-600 sm:text-sm">Please select where you ordered from.</p> : null}
+                </div>
+
+                <div>
+                  <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-sm">Step 3 · Receive cashback via *</label>
                   <div className="mt-2 grid gap-3 sm:grid-cols-2">
                     <button
                       type="button"
@@ -646,8 +518,8 @@ export default function CustomerForm() {
                       <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-500/10 text-brand-600 sm:h-12 sm:w-12">
                         <CreditCard size={18} />
                       </span>
-                      <p className="mt-3 text-sm font-extrabold text-cocoa-900 sm:text-base">UPI ID</p>
-                      <p className="text-xs font-medium text-cocoa-400 sm:text-sm">Best for quick transfer</p>
+                      <p className="mt-3 text-base font-extrabold text-cocoa-900 sm:text-base">UPI ID</p>
+                      <p className="text-sm font-medium text-cocoa-400 sm:text-sm">Best for quick transfer</p>
                     </button>
                     <button
                       type="button"
@@ -658,30 +530,30 @@ export default function CustomerForm() {
                       <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gold-500/10 text-gold-600 sm:h-12 sm:w-12">
                         <QrCode size={18} />
                       </span>
-                      <p className="mt-3 text-sm font-extrabold text-cocoa-900 sm:text-base">UPI QR</p>
-                      <p className="text-xs font-medium text-cocoa-400 sm:text-sm">Upload only your QR image</p>
+                      <p className="mt-3 text-base font-extrabold text-cocoa-900 sm:text-base">UPI QR</p>
+                      <p className="text-sm font-medium text-cocoa-400 sm:text-sm">Upload only your QR image</p>
                     </button>
                   </div>
                 </div>
 
                 {form.payoutMethod === 'upi' ? (
                   <div>
-                    <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">UPI ID *</label>
+                    <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">UPI ID *</label>
                     <input
                       value={form.upiId}
                       onChange={(event) => setField({ upiId: event.target.value })}
                       onBlur={() => setTouched((current) => ({ ...current, upi: true }))}
                       placeholder="yourname@upi"
                       disabled={busy}
-                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.upi && !validations.upiBaseOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
+                      className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-base font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.upi && !validations.upiBaseOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                     />
-                    <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Enter the UPI ID where you want to receive the cashback amount.</p>
-                    {touched.upi && !validations.upiBaseOk ? <p className="mt-1.5 text-xs font-semibold text-red-600 sm:text-sm">Please enter a valid UPI ID.</p> : null}
+                    <p className="mt-1.5 text-sm font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Enter the UPI ID where you want to receive the cashback amount.</p>
+                    {touched.upi && !validations.upiBaseOk ? <p className="mt-1.5 text-sm font-semibold text-red-600 sm:text-sm">Please enter a valid UPI ID.</p> : null}
                   </div>
                 ) : (
                   <div>
-                    <label className="text-[11px] font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">UPI QR image *</label>
-                    <p className="mt-1.5 text-[11px] font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Upload only your UPI QR image for cashback payment.</p>
+                    <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">UPI QR image *</label>
+                    <p className="mt-1.5 text-sm font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Upload only your UPI QR image for cashback payment.</p>
                     <div className="mt-2">
                       <ImageUpload
                         label="Upload UPI QR image"
@@ -692,7 +564,7 @@ export default function CustomerForm() {
                         disabled={busy}
                       />
                     </div>
-                    {touched.upi && !validations.upiBaseOk ? <p className="mt-1.5 text-xs font-semibold text-red-600 sm:text-sm">Please upload your UPI QR image.</p> : null}
+                    {touched.upi && !validations.upiBaseOk ? <p className="mt-1.5 text-sm font-semibold text-red-600 sm:text-sm">Please upload your UPI QR image.</p> : null}
                   </div>
                 )}
 
@@ -719,10 +591,10 @@ export default function CustomerForm() {
                   <Search size={18} />
                 </span>
                 <span className="min-w-0 flex-1 text-left">
-                  <span className="block text-sm font-extrabold text-cocoa-900 sm:text-base">Already submitted?</span>
-                  <span className="block text-xs font-medium text-cocoa-400 sm:text-sm">Track your cashback status with your reference ID.</span>
+                  <span className="block text-base font-extrabold text-cocoa-900 sm:text-base">Already submitted?</span>
+                  <span className="block text-sm font-medium text-cocoa-400 sm:text-sm">Track your cashback status with your reference ID.</span>
                 </span>
-                <span className="flex shrink-0 items-center gap-1 text-sm font-bold text-brand-600 transition group-hover:translate-x-0.5 sm:text-base">
+                <span className="flex shrink-0 items-center gap-1 text-base font-bold text-brand-600 transition group-hover:translate-x-0.5 sm:text-base">
                   Track <ArrowUpRight size={16} />
                 </span>
               </Link>
@@ -745,7 +617,7 @@ export default function CustomerForm() {
               }}
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
-              className={`fixed bottom-4 right-4 z-30 flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full border text-[11px] font-black leading-none backdrop-blur-sm transition sm:bottom-6 sm:right-6 sm:h-[88px] sm:w-[88px] sm:text-xs ${jumpButtonClass}`}
+              className={`fixed bottom-4 right-4 z-30 flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full border text-sm font-black leading-none backdrop-blur-sm transition sm:bottom-6 sm:right-6 sm:h-[88px] sm:w-[88px] sm:text-xs ${jumpButtonClass}`}
               aria-label={`Scroll to ${jumpLabel} section`}
             >
               <motion.span
@@ -759,8 +631,6 @@ export default function CustomerForm() {
               </motion.span>
               <span className="tracking-[0.06em]">{jumpLabel}</span>
             </motion.button>
-          </>
-        )}
       </main>
     </div>
   )
@@ -774,12 +644,14 @@ function OfferPill({ icon: Icon, tone, children }) {
   }
 
   return (
-    <div className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-black shadow-soft sm:px-5 sm:py-2.5 sm:text-base ${tones[tone] || tones.brand}`}>
+    <div className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-base font-black shadow-soft sm:px-5 sm:py-2.5 sm:text-base ${tones[tone] || tones.brand}`}>
       <Icon size={16} /> {children}
     </div>
   )
 }
 
+// Kept for potential future use — not blocking homepage anymore
+// eslint-disable-next-line no-unused-vars
 function OpeningLoader({ brandName, extended = false }) {
   return (
     <div className="relative min-h-screen overflow-hidden surface-warm">
@@ -846,9 +718,9 @@ function OpeningLoader({ brandName, extended = false }) {
           >
             {brandName}
           </motion.h1>
-          <p className="mt-2 text-sm font-semibold text-cocoa-500 sm:text-base">Preparing your cashback form…</p>
+          <p className="mt-2 text-base font-semibold text-cocoa-500 sm:text-base">Preparing your cashback form…</p>
           {extended ? (
-            <p className="mt-1 text-xs font-semibold text-cocoa-400 sm:text-sm">
+            <p className="mt-1 text-sm font-semibold text-cocoa-400 sm:text-sm">
               This is taking a little longer than expected. Hang tight!
             </p>
           ) : null}
@@ -875,16 +747,23 @@ function PlatformCard({ brand, label, href }) {
     brand === 'swiggy'
       ? {
           wrap: 'border-[#ffd9bc] bg-[#fff7f1] text-[#7a3a06] hover:border-[#fc8019]/45',
-          bubble: 'bg-[#fc8019] text-white',
+          bubble: 'bg-white',
           hint: 'text-[#a66329]',
-          mark: 'S',
+          logo: '/logos/swiggy.png',
         }
-      : {
-          wrap: 'border-[#ffd5eb] bg-[#fff5fb] text-[#7a214e] hover:border-[#ff4fa3]/45',
-          bubble: 'bg-gradient-to-br from-[#ff4fa3] to-[#ff7dbf] text-white',
-          hint: 'text-[#9f4a75]',
-          mark: 'T',
-        }
+      : brand === 'zomato'
+        ? {
+            wrap: 'border-[#ffc1c1] bg-[#fff1f1] text-[#7a0f0f] hover:border-[#e23744]/45',
+            bubble: 'bg-white',
+            hint: 'text-[#a33a3a]',
+            logo: '/logos/zomato.png',
+          }
+        : {
+            wrap: 'border-[#ffd5eb] bg-[#fff5fb] text-[#7a214e] hover:border-[#ff4fa3]/45',
+            bubble: 'bg-white',
+            hint: 'text-[#9f4a75]',
+            logo: '/logos/toing.png',
+          }
 
   return (
     <a
@@ -893,12 +772,12 @@ function PlatformCard({ brand, label, href }) {
       rel="noreferrer"
       className={`flex items-center gap-3 rounded-2xl border px-3.5 py-3 transition ${styles.wrap}`}
     >
-      <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-black shadow-soft ${styles.bubble}`}>
-        {styles.mark}
+      <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl shadow-soft ${styles.bubble} p-1`}>
+        <img src={styles.logo} alt={`${label} logo`} className="h-full w-full object-contain rounded-xl" />
       </span>
       <span className="min-w-0 flex-1 text-left">
-        <span className="block text-sm font-extrabold leading-5 sm:text-base sm:leading-6">{label}</span>
-        <span className={`mt-0.5 flex items-center gap-1 text-[11px] font-semibold sm:text-xs ${styles.hint}`}>
+        <span className="block text-base font-extrabold leading-5 sm:text-base sm:leading-6">{label}</span>
+        <span className={`mt-0.5 flex items-center gap-1 text-sm font-semibold sm:text-xs ${styles.hint}`}>
           <Smartphone size={12} /> Tap to open ordered app / site
         </span>
       </span>

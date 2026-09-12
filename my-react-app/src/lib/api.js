@@ -1,4 +1,19 @@
+import { CUSTOMER_CONFIG } from '../config/customerConfig.js'
+
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+
+// Single source of truth for customer homepage is my-react-app/src/config/customerConfig.js
+// Keep a re-export here for any legacy imports; the customer route must use
+// CUSTOMER_CONFIG directly and never block on GET /api/settings.
+export const DEFAULT_PUBLIC_SETTINGS = {
+  businessName: CUSTOMER_CONFIG.businessName,
+  cashbackAmount: CUSTOMER_CONFIG.cashbackAmount,
+  campaignActive: true,
+  pauseMessage: 'Cashback submissions are paused right now. Please try again shortly.',
+  successNote: 'Cashback will be checked and processed after review.',
+  googleAuthEnabled: false,
+}
+
 const TOKEN_KEY = 'mm_admin_token'
 const TOKEN_COOKIE = 'mm_admin_token'
 const AUTH_PATHS = ['/api/auth/me', '/api/auth/login', '/api/auth/google']
@@ -175,12 +190,15 @@ async function apiFetch(path, options = {}) {
   }
 
   if (!response.ok) {
-    const message = data?.detail || 'Request failed.'
+    const message = data?.detail || data?.message || 'Request failed.'
     // Only drop the token when an *auth* endpoint rejects it. A 401 from a
     // data endpoint must never force the user back to the login screen.
     if (response.status === 401 && isAuthPath(path)) setToken('')
     const error = new Error(message)
     error.status = response.status
+    // Backend campaign-paused contract: {ok:false,code:"CAMPAIGN_PAUSED",message}
+    if (data?.code) error.code = data.code
+    if (data?.message) error.backendMessage = data.message
     throw error
   }
 

@@ -102,6 +102,7 @@ export default function Detail({ settings, onUpdated, onDeleted }) {
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
                 <Info label="Customer name" value={submission.customerName} />
                 <Info label="Order ID last 4 digits" value={submission.orderLast4} mono />
+                <Info label="Ordered via" value={submission.orderedApp ? submission.orderedApp.charAt(0).toUpperCase()+submission.orderedApp.slice(1) : '—'} />
                 <Info label="Created" value={formatDateTime(submission.createdAt)} />
                 <Info label="Updated" value={formatDateTime(submission.updatedAt)} />
               </div>

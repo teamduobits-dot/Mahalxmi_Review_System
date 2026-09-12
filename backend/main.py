@@ -48,6 +48,7 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 
 ALLOWED_STATUSES = {"pending", "approved", "paid", "rejected"}
+ALLOWED_ORDERED_APPS = {"swiggy", "zomato", "toing"}
 
 # ---------------------------------------------------------------------------
 # Environment & production gating
@@ -426,6 +427,7 @@ def serialize_submission(submission: dict | None) -> dict:
         "reference": submission["reference"],
         "customerName": submission["customer_name"],
         "orderLast4": submission["order_last4"],
+        "orderedApp": submission.get("ordered_app") or "",
         "customerComment": submission["customer_comment"] or "",
         "reviewScreenshotUrl": review_url,
         "payoutMethod": submission["payout_method"],
@@ -480,6 +482,7 @@ async def create_submission(
     request: Request,
     customerName: str = Form(...),
     orderLast4: str = Form(...),
+    orderedApp: str = Form(...),
     customerComment: str = Form(""),
     payoutMethod: Literal["upi", "qr"] = Form(...),
     upiId: str = Form(""),
@@ -488,13 +491,14 @@ async def create_submission(
 ):
     submit_limiter.check(client_ip(request), SUBMIT_RATE_LIMIT, SUBMIT_RATE_WINDOW_SECONDS)
 
-    settings = public_settings_payload()
-    if not settings["campaignActive"]:
-        raise HTTPException(status_code=400, detail=settings["pauseMessage"])
-
+    # Order per spec: Validate -> Check campaign BEFORE any side effect
+    # (no reference, no Firestore counter, no Cloudinary when paused).
     customer_name = customerName.strip()
     last4 = orderLast4.strip()
     customer_comment = customerComment.strip()
+    ordered_app = orderedApp.strip().lower()
+    if ordered_app not in ALLOWED_ORDERED_APPS:
+        raise HTTPException(status_code=400, detail="Please select where you ordered from (Swiggy, Zomato or Toing).")
     if len(customer_name) < 2:
         raise HTTPException(status_code=400, detail="Customer name is required.")
     if len(last4) != 4 or not last4.isdigit():
@@ -510,6 +514,20 @@ async def create_submission(
     # Only after EVERY form field validated do we read + store the images —
     # an invalid submission must never leave orphan files behind.
     await validate_image(reviewScreenshot, "Review screenshot")
+
+    # Campaign status checked ONLY here, after validation, before any storage.
+    # Uses existing Firestore settings structure (reuse campaign_active field)
+    # via public_settings_payload(). Returns 403 with code for frontend.
+    settings = public_settings_payload()
+    if not settings["campaignActive"]:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok": False,
+                "code": "CAMPAIGN_PAUSED",
+                "message": "This campaign is currently stopped for now. We'll start again soon. Stay tuned!",
+            },
+        )
 
     # UUID key for this submission: in firebase mode it becomes the Firestore
     # document ID and the Storage folder name; never customer data in paths.
@@ -529,6 +547,7 @@ async def create_submission(
             {
                 "customer_name": customer_name,
                 "order_last4": last4,
+                "ordered_app": ordered_app,
                 "customer_comment": customer_comment,
                 "review_screenshot_path": review_path,
                 "payout_method": payoutMethod,
