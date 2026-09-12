@@ -17,17 +17,14 @@ export default function FloatingFood({ count = 6, opacity = 0.24 }) {
       {ITEMS.slice(0, count).map((item) => (
         <div
           key={`${item.type}-${item.x}-${item.y}`}
-          className="absolute will-change-transform"
+          className="absolute"
           style={{ left: item.x, top: item.y, opacity }}
         >
-          <div style={{ animation: `drift ${item.drift}s ease-in-out ${item.delay}s infinite alternate` }}>
-            <div
-              className="will-change-transform"
-              style={{
-                animation: `float ${item.dur}s ease-in-out ${item.delay}s infinite`,
-                transform: `rotate(${item.rot}deg) translateZ(0)`,
-              }}
-            >
+          <div
+            className="will-change-transform"
+            style={{ animation: `drift ${item.drift}s ease-in-out ${item.delay}s infinite alternate` }}
+          >
+            <div style={{ animation: `float ${item.dur}s ease-in-out ${item.delay}s infinite` }}>
               <FoodIcon type={item.type} size={item.size} />
             </div>
           </div>
