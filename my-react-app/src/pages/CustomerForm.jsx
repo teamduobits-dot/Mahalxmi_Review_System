@@ -85,6 +85,14 @@ export default function CustomerForm() {
   const formRef = useRef(null)
   const detailsRef = useRef(null)
   const scrollAnimationRef = useRef(null)
+  // Per-field refs used by submit-time validation: they let us scroll to (and,
+  // for normal text inputs, focus) the FIRST invalid required field.
+  const screenshotRef = useRef(null)
+  const nameInputRef = useRef(null)
+  const last4InputRef = useRef(null)
+  const orderedAppRef = useRef(null)
+  const upiInputRef = useRef(null)
+  const qrFieldRef = useRef(null)
   // Ref mirrors for async flows (avoid stale closures); the state twin above
   // records readiness for submit-time decisions.
   const backendReadyRef = useRef(false)
@@ -105,7 +113,23 @@ export default function CustomerForm() {
     return { nameOk, last4Ok, orderedAppOk, screenshotOk, upiBaseOk }
   }, [form])
 
-  const canSubmit = validations.nameOk && validations.last4Ok && validations.orderedAppOk && validations.screenshotOk && validations.upiBaseOk
+  // Required fields in the form's existing visual order (top → bottom). On a
+  // Submit click the FIRST invalid entry wins: the page scrolls to it, it gets
+  // the project's red error state, and text inputs are focused. Nothing is sent
+  // to the backend until every entry below is valid.
+  const requiredFields = [
+    { key: 'reviewScreenshot', ok: validations.screenshotOk },
+    { key: 'customerName', ok: validations.nameOk },
+    { key: 'orderLast4', ok: validations.last4Ok },
+    { key: 'orderedApp', ok: validations.orderedAppOk },
+    { key: 'upi', ok: validations.upiBaseOk },
+  ]
+
+  // Red state per field. It disappears on its own the moment the field becomes
+  // valid — the user never has to click Submit again to clear an error.
+  const fieldErrors = Object.fromEntries(
+    requiredFields.map((field) => [field.key, Boolean(touched[field.key]) && !field.ok])
+  )
 
   const setField = (patch) => setForm((current) => ({ ...current, ...patch }))
 
@@ -150,10 +174,10 @@ export default function CustomerForm() {
     scrollAnimationRef.current = window.requestAnimationFrame(frame)
   }
 
-  const scrollToSection = (ref) => {
+  const scrollToSection = (ref, offset = 18) => {
     const section = ref.current
     if (!section) return
-    const sectionTop = window.scrollY + section.getBoundingClientRect().top - 18
+    const sectionTop = window.scrollY + section.getBoundingClientRect().top - offset
     animateScrollTo(Math.max(0, sectionTop))
   }
 
@@ -213,9 +237,44 @@ export default function CustomerForm() {
     scrollToSection(stepsRef)
   }
 
+  // Extra breathing room when scrolling to an invalid field, so its label and
+  // the new error message are both on screen (mobile + desktop).
+  const FIELD_SCROLL_OFFSET = 96
+
+  // Show the error state for one field, smooth-scroll it into view and focus it
+  // when it is a normal text input. Custom components (image uploads, the
+  // ordered-app selector) are scrolled to and highlighted as a whole section.
+  const revealInvalidField = (field) => {
+    // Refs are resolved here, at click time — never during render. The `upi`
+    // entry points at whichever payout control is currently active.
+    const targets = {
+      reviewScreenshot: { scroll: screenshotRef },
+      customerName: { scroll: nameInputRef, focus: nameInputRef },
+      orderLast4: { scroll: last4InputRef, focus: last4InputRef },
+      orderedApp: { scroll: orderedAppRef },
+      upi: form.payoutMethod === 'upi'
+        ? { scroll: upiInputRef, focus: upiInputRef }
+        : { scroll: qrFieldRef },
+    }
+    const target = targets[field.key]
+
+    setTouched((current) => ({ ...current, [field.key]: true }))
+    if (target?.scroll) scrollToSection(target.scroll, FIELD_SCROLL_OFFSET)
+    // preventScroll: our own animated scroll positions the field — a native
+    // focus scroll would fight it and make the page jump.
+    target?.focus?.current?.focus({ preventScroll: true })
+  }
+
   const submit = async () => {
-    setTouched({ customerName: true, orderLast4: true, orderedApp: true, reviewScreenshot: true, upi: true })
-    if (!canSubmit || busy || submitGuardRef.current) return
+    // Frontend validation gate. An incomplete/invalid form stops here: no API
+    // request, no backend submission, no duplicate request — the user is simply
+    // guided to the first field that needs attention.
+    const firstInvalidField = requiredFields.find((field) => !field.ok)
+    if (firstInvalidField) {
+      revealInvalidField(firstInvalidField)
+      return
+    }
+    if (busy || submitGuardRef.current) return
 
     // Lock the form synchronously: the overlay blocks interaction, the guard
     // blocks double-clicks, and `busy` disables every control below.
@@ -429,7 +488,10 @@ export default function CustomerForm() {
                     </div>
                   </div>
 
-                  <div className="mt-4">
+                  <div
+                    ref={screenshotRef}
+                    className={`mt-4 ${fieldErrors.reviewScreenshot ? 'rounded-[1.7rem] ring-4 ring-red-200' : ''}`}
+                  >
                     <ImageUpload
                       label="Upload submitted review screenshot"
                       hint="Review/rating proof from Swiggy, Zomato or Toing"
@@ -458,10 +520,12 @@ export default function CustomerForm() {
                     <div className="relative mt-1.5">
                       <UserRound size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-cocoa-300" />
                       <input
+                        ref={nameInputRef}
                         value={form.customerName}
                         onChange={(event) => setField({ customerName: event.target.value })}
                         onBlur={() => setTouched((current) => ({ ...current, customerName: true }))}
                         placeholder="Enter the same name used in the app"
+                        aria-invalid={Boolean(fieldErrors.customerName)}
                         disabled={busy}
                         className={`w-full rounded-2xl border-2 bg-white py-3.5 pl-11 pr-4 text-base font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.customerName && !validations.nameOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                       />
@@ -473,11 +537,13 @@ export default function CustomerForm() {
                   <div>
                     <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">Step 2 · Order ID last 4 digits *</label>
                     <input
+                      ref={last4InputRef}
                       value={form.orderLast4}
                       onChange={(event) => setField({ orderLast4: event.target.value.replace(/\D/g, '').slice(0, 4) })}
                       onBlur={() => setTouched((current) => ({ ...current, orderLast4: true }))}
                       inputMode="numeric"
                       placeholder="e.g. 4582"
+                      aria-invalid={Boolean(fieldErrors.orderLast4)}
                       disabled={busy}
                       className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-center text-base font-semibold tracking-[0.28em] outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.orderLast4 && !validations.last4Ok ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                     />
@@ -486,10 +552,12 @@ export default function CustomerForm() {
                   </div>
                 </div>
 
-                <div>
+                <div ref={orderedAppRef}>
                   <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-sm">Where did you order from? *</label>
                   <p className="mt-1 text-base font-medium leading-5 text-cocoa-500 sm:text-sm sm:leading-6">Select the app you ordered on — this helps us verify your review.</p>
-                  <div className="mt-3 flex rounded-full bg-[#E9EBF0] p-1.5 shadow-inner sm:p-2">
+                  <div
+                    className={`mt-3 flex rounded-full bg-[#E9EBF0] p-1.5 shadow-inner sm:p-2 ${fieldErrors.orderedApp ? 'ring-4 ring-red-200' : ''}`}
+                  >
                     {ORDERED_APPS.map((app) => (
                       <button
                         key={app.id}
@@ -540,10 +608,12 @@ export default function CustomerForm() {
                   <div>
                     <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">UPI ID *</label>
                     <input
+                      ref={upiInputRef}
                       value={form.upiId}
                       onChange={(event) => setField({ upiId: event.target.value })}
                       onBlur={() => setTouched((current) => ({ ...current, upi: true }))}
                       placeholder="yourname@upi"
+                      aria-invalid={Boolean(fieldErrors.upi)}
                       disabled={busy}
                       className={`mt-1.5 w-full rounded-2xl border-2 bg-white px-4 py-3.5 text-base font-semibold outline-none transition disabled:opacity-60 sm:py-4 sm:text-base ${touched.upi && !validations.upiBaseOk ? 'border-red-300 ring-4 ring-red-50' : 'border-cocoa-200/80 focus:border-brand-400 focus:ring-4 focus:ring-brand-100'}`}
                     />
@@ -554,7 +624,10 @@ export default function CustomerForm() {
                   <div>
                     <label className="text-sm font-black uppercase tracking-wider text-cocoa-500 sm:text-xs">UPI QR image *</label>
                     <p className="mt-1.5 text-sm font-medium leading-5 text-cocoa-400 sm:text-xs sm:leading-6">Upload only your UPI QR image for cashback payment.</p>
-                    <div className="mt-2">
+                    <div
+                      ref={qrFieldRef}
+                      className={`mt-2 ${fieldErrors.upi ? 'rounded-[1.7rem] ring-4 ring-red-200' : ''}`}
+                    >
                       <ImageUpload
                         label="Upload UPI QR image"
                         hint="Only QR image for cashback transfer"
@@ -570,11 +643,15 @@ export default function CustomerForm() {
 
                 {error ? <ErrorBox>{error}</ErrorBox> : null}
 
+                {/* Always enabled + always styled as active: incomplete fields no
+                    longer grey the button out. Clicking it runs validation and
+                    guides the user to the first field that needs attention.
+                    `disabled={busy}` stays purely as the in-flight guard. */}
                 <button
                   type="button"
                   onClick={submit}
                   disabled={busy}
-                  className={`btn-shine flex w-full items-center justify-center gap-2 rounded-[1.8rem] px-6 py-4 text-base font-extrabold text-white transition sm:py-5 sm:text-lg ${canSubmit ? 'bg-gradient-to-b from-brand-400 to-brand-600 shadow-pop hover:brightness-105' : 'bg-cocoa-300'} ${busy ? 'opacity-80' : ''}`}
+                  className={`btn-shine flex w-full items-center justify-center gap-2 rounded-[1.8rem] bg-gradient-to-b from-brand-400 to-brand-600 px-6 py-4 text-base font-extrabold text-white shadow-pop transition hover:brightness-105 sm:py-5 sm:text-lg ${busy ? 'opacity-80' : ''}`}
                 >
                   {busy ? <Spinner size={18} /> : <Gift size={18} />}
                   Submit cashback request
